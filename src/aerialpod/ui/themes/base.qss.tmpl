@@ -1,0 +1,217 @@
+/* AerialPod base theme — tokens substituted by ui/theming.py */
+
+QMainWindow, QWidget {
+    background: @bg;
+    color: @text;
+    font-size: 14px;
+}
+
+/* ---- navigation sidebar ---- */
+#NavList {
+    background: @surface;
+    border: none;
+    padding-top: 8px;
+    font-size: 15px;
+}
+#NavList::item {
+    padding: 10px 16px;
+    border-radius: 8px;
+    margin: 2px 8px;
+}
+#NavList::item:selected {
+    background: @accent;
+    color: @on-accent;
+}
+#NavList::item:hover:!selected {
+    background: @surface-hover;
+}
+
+/* ---- page chrome ---- */
+#PageTitle {
+    font-size: 22px;
+    font-weight: 700;
+    padding: 4px 0;
+}
+#QueueHint, #EpisodeMeta, #PlayerTime, #QueueCount, #PodcastDescription, #SyncStatus {
+    color: @text-dim;
+}
+#QueueHint { font-size: 12px; }
+#EpisodeMeta { font-size: 12px; }
+
+QStatusBar {
+    background: @surface;
+    color: @text-dim;
+}
+
+/* ---- lists ---- */
+QListWidget, QListView {
+    background: @bg;
+    border: none;
+}
+QListWidget::item {
+    border-radius: 8px;
+    margin: 1px 4px;
+}
+QListWidget::item:selected {
+    background: @surface-hover;
+    color: @text;
+}
+QListWidget::item:hover:!selected {
+    background: @surface;
+}
+#SubscriptionsGrid::item {
+    padding: 6px;
+}
+#EpisodeTitle { font-weight: 600; }
+
+/* ---- buttons ---- */
+QPushButton, QToolButton {
+    background: @surface;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 6px 14px;
+}
+QPushButton:hover, QToolButton:hover {
+    background: @surface-hover;
+}
+QPushButton:pressed, QToolButton:pressed {
+    background: @border;
+}
+#PrimaryButton {
+    background: @accent;
+    color: @on-accent;
+    border: none;
+    font-weight: 600;
+}
+#PrimaryButton:hover { background: @accent-hover; }
+#DangerButton { color: @danger; }
+
+#PlayPauseButton {
+    border-radius: 24px;
+    background: @accent;
+    color: @on-accent;
+    font-size: 18px;
+    border: none;
+}
+#PlayPauseButton:hover { background: @accent-hover; }
+#SkipBackButton, #SkipFwdButton {
+    border-radius: 20px;
+    font-size: 11px;
+    padding: 0;
+}
+#SleepButton, #DeviceButton, #SpeedButton {
+    padding: 6px 10px;
+}
+#VolumeIcon {
+    color: @text-dim;
+    font-size: 12px;
+    padding-left: 6px;
+}
+#RowPlayButton, #RowQueueButton {
+    border-radius: 17px;
+    padding: 0;
+}
+
+/* ---- player bar ---- */
+#PlayerBar {
+    background: @surface;
+    border-top: 1px solid @border;
+}
+#PlayerTitle { font-weight: 600; }
+
+/* ---- sliders ---- */
+QSlider::groove:horizontal {
+    height: 5px;
+    background: @border;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: @accent;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    background: @accent;
+}
+
+/* ---- progress bars (episode rows) ---- */
+QProgressBar#EpisodeProgress {
+    background: @border;
+    border: none;
+    border-radius: 2px;
+}
+QProgressBar#EpisodeProgress::chunk {
+    background: @accent;
+    border-radius: 2px;
+}
+
+/* ---- inputs ---- */
+QLineEdit, QSpinBox, QComboBox, QDoubleSpinBox {
+    background: @surface;
+    border: 1px solid @border;
+    border-radius: 6px;
+    padding: 5px 8px;
+    selection-background-color: @accent;
+    selection-color: @on-accent;
+}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QDoubleSpinBox:focus {
+    border-color: @accent;
+}
+
+QGroupBox {
+    border: 1px solid @border;
+    border-radius: 10px;
+    margin-top: 12px;
+    padding-top: 8px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px;
+}
+
+QMenu {
+    background: @surface;
+    border: 1px solid @border;
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 24px;
+    border-radius: 6px;
+}
+QMenu::item:selected {
+    background: @accent;
+    color: @on-accent;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+}
+QScrollBar::handle:vertical {
+    background: @border;
+    border-radius: 5px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover { background: @text-dim; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+
+QScrollArea { border: none; }
+
+/* ---- home sections ---- */
+#SectionHeader {
+    font-size: 17px;
+    font-weight: 700;
+    padding: 8px 0 2px 0;
+}
+#SectionMore {
+    color: @accent;
+    background: transparent;
+    border: none;
+    padding: 4px;
+}

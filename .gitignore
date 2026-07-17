@@ -1,0 +1,33 @@
+# --- virtual environments -------------------------------------------------
+.venv/
+venv/
+
+# --- Python build/runtime artifacts ---------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- tool caches -----------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / IDEs ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+
+# --- AI coding assistants (local session/config state) ----------------------
+.claude/
+.antigravity/
+.codex/
+
+# --- local-only app data (never lives in the repo, but belt & suspenders:
+#     a stray credentials fallback file must never be committed) ------------
+credentials.json
+*.db
+*.db-wal
+*.db-shm

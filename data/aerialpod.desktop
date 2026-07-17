@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AerialPod
+GenericName=Podcast Player
+Comment=Podcast player that syncs with gpodder.net and AntennaPod
+Exec=aerialpod
+Icon=aerialpod
+Terminal=false
+Categories=AudioVideo;Audio;Player;GNOME;Qt;
+Keywords=podcast;gpodder;antennapod;audio;
+StartupNotify=true
