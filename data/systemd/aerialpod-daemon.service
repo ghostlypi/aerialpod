@@ -1,6 +1,5 @@
 [Unit]
 Description=AerialPod background sync
-Documentation=https://github.com/
 # Session-scoped on purpose: the daemon reads the gpodder.net account and the
 # device pairing key out of the keyring, which is only unlocked once you have
 # logged in. Nothing useful could run before that.

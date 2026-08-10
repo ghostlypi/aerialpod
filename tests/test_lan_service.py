@@ -15,7 +15,7 @@ import pytest
 from aerialpod.db import repo
 from aerialpod.lan import crypto, pairing
 from aerialpod.lan.protocol import Channel
-from aerialpod.lan.service import LanService
+from aerialpod.lan.service import LanService, plain_address
 
 PORT = 47999
 SECRET = b"a-shared-pairing-secret"
@@ -37,7 +37,9 @@ def service(fresh_db, qapp, monkeypatch):
 
 
 PEER_ID = "0123456789abcdef0123456789abcdef"
-PEER_IDENT = {"type": "ident", "device_id": PEER_ID, "caption": "pytest-peer"}
+PEER_PORT = 47998   # deliberately not the port the service listens on
+PEER_IDENT = {"type": "ident", "device_id": PEER_ID, "caption": "pytest-peer",
+              "port": PEER_PORT}
 
 
 def converse(sock: socket.socket, channel: Channel, qapp, want: str) -> dict:
@@ -100,7 +102,9 @@ def test_the_peer_is_remembered_for_next_time(service, qapp):
         peers = repo.known_peers()
         assert [p["device_id"] for p in peers] == [PEER_ID]
         assert peers[0]["caption"] == "pytest-peer"
-        assert peers[0]["port"] == PORT
+        # The peer said where it listens; assuming our own port would strand
+        # any pair of machines configured differently.
+        assert peers[0]["port"] == PEER_PORT
     finally:
         sock.close()
 
@@ -112,5 +116,30 @@ def test_an_unpaired_device_gets_nowhere(service, qapp):
         with pytest.raises(AssertionError, match="closed the connection|timed out"):
             converse(sock, channel, qapp, "ident")
         assert not channel.established
+    finally:
+        sock.close()
+
+
+# ---------------------------------------------------------------- addresses
+
+
+@pytest.mark.parametrize("reported,stored", [
+    ("::ffff:192.168.1.24", "192.168.1.24"),   # IPv4 peer, dual-stack listener
+    ("192.168.1.24", "192.168.1.24"),          # IPv4 peer, IPv4 listener
+    ("fe80::1", "fe80::1"),                    # a real IPv6 peer is left alone
+])
+def test_peer_addresses_are_stored_in_one_form(reported, stored):
+    """Otherwise the same machine looks like two peers depending on who dialled,
+    and we open a second session on every retry only to drop it again."""
+    assert plain_address(reported) == stored
+
+
+def test_a_dialled_peer_matches_the_one_that_dialled_us(service, qapp):
+    """The address recorded from an inbound connection has to be the same
+    string we would dial, or reconnecting after a restart opens a duplicate."""
+    sock, channel = dial(crypto.channel_key(SECRET))
+    try:
+        converse(sock, channel, qapp, "snapshot")
+        assert repo.known_peers()[0]["address"] == "127.0.0.1"
     finally:
         sock.close()

@@ -33,6 +33,17 @@ RESYNC_INTERVAL_MS = 300_000      # periodic snapshot exchange as a safety net
 CONNECT_TIMEOUT_MS = 5_000
 
 
+def plain_address(text: str) -> str:
+    """Qt reports an IPv4 peer on a dual-stack listener as ::ffff:192.168.1.24.
+
+    Left alone, the same machine looks like two different addresses depending
+    on which end dialled — so a peer we accepted a connection from would never
+    match the one we later dial, and we would keep opening a second session
+    only to drop it again on the device-id tie-break.
+    """
+    return text[len("::ffff:"):] if text.startswith("::ffff:") else text
+
+
 class PeerLink(QObject):
     """One connection to a peer, inbound or outbound.
 
@@ -52,6 +63,7 @@ class PeerLink(QObject):
         self.ident = ident
         self.peer_id: str | None = None
         self.caption: str = ""
+        self.peer_port: int = 0
         self.channel = Channel(role, key)
         self._sent_ident = False
         self._closing = False
@@ -63,7 +75,7 @@ class PeerLink(QObject):
 
     @property
     def address(self) -> str:
-        return self.socket.peerAddress().toString()
+        return plain_address(self.socket.peerAddress().toString())
 
     @property
     def established(self) -> bool:
@@ -137,6 +149,10 @@ class PeerLink(QObject):
             return
         self.peer_id = peer_id
         self.caption = str(message.get("caption") or peer_id[:8])
+        try:
+            self.peer_port = int(message.get("port") or 0)
+        except (TypeError, ValueError):
+            self.peer_port = 0
         self.ready.emit(self)
 
     def _on_disconnected(self) -> None:
@@ -258,6 +274,10 @@ class LanService(QObject):
             "type": "ident",
             "device_id": repo.lan_device_id(),
             "caption": socket.gethostname(),
+            # Where to reach us next time. Without this the other end can only
+            # guess, and guessing "the same port we use" is wrong the moment
+            # two machines are configured differently.
+            "port": int(repo.get_state("lan_port")),
         }
 
     def _on_incoming(self) -> None:
@@ -332,11 +352,17 @@ class LanService(QObject):
         link.send(state.build_snapshot())
 
     def _peer_port(self, link: PeerLink) -> int:
-        """The port to dial next time. For an outbound link that's the one we
-        connected to; for an inbound one the source port is ephemeral and
-        useless, so assume the peer listens where we do."""
-        default = int(repo.get_state("lan_port"))
-        return link.socket.peerPort() if link.role == "client" else default
+        """The port to dial next time.
+
+        The peer tells us in its ident, which is authoritative. Falling back:
+        an outbound link knows the port we dialled, while an inbound one only
+        has an ephemeral source port, so all it can do is assume ours.
+        """
+        if link.peer_port:
+            return link.peer_port
+        if link.role == "client":
+            return link.socket.peerPort()
+        return int(repo.get_state("lan_port"))
 
     def _preferred(self, a: PeerLink, b: PeerLink) -> PeerLink:
         ours = repo.lan_device_id()
