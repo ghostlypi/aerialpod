@@ -47,6 +47,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "lan_add_peer": ("LanAddPeer", "su"),
     "lan_remove_peer": ("LanRemovePeer", "su"),
     "lan_discover": ("LanDiscover", ""),
+    "announce_state": ("AnnounceState", ""),
 }
 
 # Qt signal name -> D-Bus member. The daemon emits these; the window re-emits

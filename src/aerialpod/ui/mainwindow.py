@@ -352,6 +352,9 @@ class MainWindow(QMainWindow):
 
     def _on_daemon_availability(self, available: bool) -> None:
         if available:
+            # Connected peers and the sync status live in the daemon's memory,
+            # so opening this window is the one moment we have to ask.
+            self.client.announce_state()
             self._on_queue_changed()
             self.subscriptions_page.reload()
         else:

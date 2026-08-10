@@ -57,6 +57,7 @@ COMMANDS = (
     "lan_add_peer",
     "lan_remove_peer",
     "lan_discover",
+    "announce_state",
 )
 
 
@@ -316,3 +317,7 @@ class ServiceHub(QObject):
 
     def lan_discover(self) -> None:
         self.lan.discover()
+
+    def announce_state(self) -> None:
+        """A front end just attached and knows nothing about live connections."""
+        self.lan.announce()

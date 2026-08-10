@@ -143,3 +143,37 @@ def test_a_dialled_peer_matches_the_one_that_dialled_us(service, qapp):
         assert repo.known_peers()[0]["address"] == "127.0.0.1"
     finally:
         sock.close()
+
+
+# ---------------------------------------------------------------- late joiners
+
+
+def test_a_window_opening_later_is_told_who_is_connected(service, qapp):
+    """Peer links are established once and then just sit there, so a front end
+    that starts afterwards never sees the connect event. It has to be able to
+    ask, or Settings claims nothing is connected while sync works fine."""
+    sock, channel = dial(crypto.channel_key(SECRET))
+    try:
+        converse(sock, channel, qapp, "snapshot")
+
+        announced: list = []
+        service.peersChanged.connect(announced.append)
+        status: list = []
+        service.statusChanged.connect(status.append)
+
+        service.announce()
+        qapp.processEvents()
+
+        assert announced, "a window opening now would show no devices"
+        assert [p["caption"] for p in announced[-1]] == ["pytest-peer"]
+        assert status and "port" in status[-1].lower()
+    finally:
+        sock.close()
+
+
+def test_announcing_with_no_peers_says_so(service, qapp):
+    announced: list = []
+    service.peersChanged.connect(announced.append)
+    service.announce()
+    qapp.processEvents()
+    assert announced == [[]]

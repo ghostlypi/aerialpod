@@ -156,6 +156,10 @@ class _Interface(ServiceInterface):
     def LanDiscover(self):  # noqa: N802
         self._cmd("lan_discover")
 
+    @method()
+    def AnnounceState(self):  # noqa: N802
+        self._cmd("announce_state")
+
     # ---- signals out
 
     @dbus_signal()
@@ -328,9 +332,7 @@ class DaemonBus(QObject):
         self._emit("RefreshError", int(podcast_id), message)
 
     def _on_peersChanged(self, peers: list) -> None:  # noqa: N802
-        self._emit("PeersChanged", [
-            {k: str(v) for k, v in peer.items()} for peer in peers
-        ])
+        self._emit("PeersChanged", peers_payload(peers))
 
     def _on_lanStatus(self, message: str) -> None:  # noqa: N802
         self._emit("LanStatus", message)
@@ -349,6 +351,13 @@ class DaemonBus(QObject):
 
     def _on_downloadFailed(self, episode_id: int, message: str) -> None:  # noqa: N802
         self._emit("DownloadFailed", int(episode_id), message)
+
+
+def peers_payload(peers: list) -> list[dict[str, str]]:
+    """Peer records as aa{ss}. D-Bus dictionaries are homogeneous, so the port
+    has to travel as text — the window only displays these, and reads anything
+    it needs to act on from the database."""
+    return [{str(k): str(v) for k, v in peer.items()} for peer in peers]
 
 
 def hub_signal_names() -> tuple[str, ...]:

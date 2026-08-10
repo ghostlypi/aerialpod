@@ -186,6 +186,7 @@ class LanService(QObject):
         self._key: bytes | None = None
         self._sweeping = False
         self._running = False
+        self._status = "Device sync is starting…"
         self._retry: QTimer | None = None
         self._discovery: QTimer | None = None
         self._resync: QTimer | None = None
@@ -198,14 +199,14 @@ class LanService(QObject):
         if self._running:
             return
         if not repo.get_state("lan_sync_enabled"):
-            self.statusChanged.emit("Device sync is off.")
+            self._set_status("Device sync is off.")
             return
 
         port = int(repo.get_state("lan_port"))
         self._server = QTcpServer(self)
         self._server.newConnection.connect(self._on_incoming)
         if not self._server.listen(QHostAddress.SpecialAddress.Any, port):
-            self.statusChanged.emit(
+            self._set_status(
                 f"Device sync couldn't listen on port {port}: {self._server.errorString()}"
             )
             self._server = None
@@ -234,7 +235,7 @@ class LanService(QObject):
         if dropped:
             log.debug("pruned %d settled queue intent(s)", dropped)
 
-        self.statusChanged.emit(f"Listening on port {port} — looking for peers…")
+        self._set_status(f"Listening on port {port} — looking for peers…")
         self._connect_known_peers()
         QTimer.singleShot(2000, self.discover_now)
 
@@ -382,6 +383,22 @@ class LanService(QObject):
             self._emit_peers()
         link.deleteLater()
 
+    def _set_status(self, message: str) -> None:
+        self._status = message
+        self.statusChanged.emit(message)
+
+    @Slot()
+    def announce(self) -> None:
+        """Re-state what we already know, for a window that just opened.
+
+        Peer connections are held in memory here, not in the database, so a
+        front end starting up has no way to read them — it has to be told. The
+        answer goes back through the ordinary signals, which keeps every
+        command one-way.
+        """
+        self.statusChanged.emit(self._status)
+        self._emit_peers()
+
     def _emit_peers(self) -> None:
         self.peersChanged.emit([
             {"device_id": pid, "caption": link.caption, "address": link.address}
@@ -489,6 +506,7 @@ class LanScheduler(QObject):
     stopRequested = Signal()
     restartRequested = Signal()
     discoverRequested = Signal()
+    announceRequested = Signal()
     snapshotRequested = Signal()
     positionRequested = Signal(object)
     peerAddRequested = Signal(str, int)
@@ -503,6 +521,7 @@ class LanScheduler(QObject):
         self.stopRequested.connect(service.stop_service)
         self.restartRequested.connect(service.restart_service)
         self.discoverRequested.connect(service.discover_now)
+        self.announceRequested.connect(service.announce)
         self.snapshotRequested.connect(service.broadcast_snapshot)
         self.positionRequested.connect(service.push_position)
         self.peerAddRequested.connect(service.add_peer)
@@ -528,6 +547,9 @@ class LanScheduler(QObject):
 
     def discover(self) -> None:
         self.discoverRequested.emit()
+
+    def announce(self) -> None:
+        self.announceRequested.emit()
 
     def add_peer(self, address: str, port: int) -> None:
         self.peerAddRequested.emit(address, port)

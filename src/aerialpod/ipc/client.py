@@ -137,6 +137,10 @@ class DaemonClient(QObject):
     def lan_discover(self) -> None:
         self._send("lan_discover")
 
+    def announce_state(self) -> None:
+        """Ask the daemon to re-emit live state we cannot read from the database."""
+        self._send("announce_state")
+
     # ------------------------------------------------------------ lifecycle
 
     def start(self) -> None:

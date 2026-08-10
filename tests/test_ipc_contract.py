@@ -134,3 +134,40 @@ def test_the_window_never_writes_to_the_database(path):
         f"{path.name} writes to the database directly: {sorted(offenders)}. "
         "Route it through DaemonClient instead."
     )
+
+
+# ---------------------------------------------------------------- marshalling
+
+
+def test_peer_records_survive_the_bus():
+    """Peer lists are the one signal payload that isn't a scalar, and the
+    window shows them verbatim — so a mangled round trip is visible as an
+    empty or wrong 'Connected' list rather than an error."""
+    from aerialpod.ipc.dbusclient import _adapt
+    from aerialpod.ipc.dbusservice import peers_payload
+
+    peers = [
+        {"device_id": "abc123", "caption": "Pi-Desktop", "address": "192.168.1.24"},
+        {"device_id": "def456", "caption": "Laptop", "address": "10.0.0.2"},
+    ]
+    (restored,) = _adapt("peersChanged", (peers_payload(peers),))
+    assert restored == peers
+
+
+def test_an_empty_peer_list_round_trips():
+    from aerialpod.ipc.dbusclient import _adapt
+    from aerialpod.ipc.dbusservice import peers_payload
+
+    assert _adapt("peersChanged", (peers_payload([]),)) == ([],)
+
+
+def test_dbus_member_names_map_to_the_generated_accessors():
+    """dbus-fast builds call_<snake> from the member name; a mismatch here is
+    an AttributeError at the moment the command is used, not at startup."""
+    from aerialpod.ipc.dbusclient import _snake
+
+    assert _snake("AnnounceState") == "announce_state"
+    assert _snake("QueueAdd") == "queue_add"
+    assert _snake("LanNewCode") == "lan_new_code"
+    for command, (member, _) in protocol.COMMANDS.items():
+        assert _snake(member) == command, f"{member} would generate call_{_snake(member)}"
