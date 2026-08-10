@@ -24,6 +24,7 @@ dev = ["pytest", "ruff"]
 
 [project.scripts]
 aerialpod = "aerialpod.main:main"
+aerialpod-daemon = "aerialpod.daemon:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aerialpod"]
@@ -38,3 +39,4 @@ testpaths = ["tests"]
 [tool.ruff.lint.per-file-ignores]
 # dbus-fast requires D-Bus signature strings ("as", "a{sv}", "x") as annotations
 "src/aerialpod/mpris/service.py" = ["F722", "F821"]
+"src/aerialpod/ipc/dbusservice.py" = ["F722", "F821"]

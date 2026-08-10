@@ -16,9 +16,10 @@ from ..db import repo
 
 
 class PodcastSettingsDialog(QDialog):
-    def __init__(self, podcast_id: int, parent=None):
+    def __init__(self, podcast_id: int, client, parent=None):
         super().__init__(parent)
         self.podcast_id = podcast_id
+        self.client = client
         p = repo.podcast_by_id(podcast_id)
         s = repo.podcast_settings(podcast_id)
         self.setWindowTitle(f"Settings — {repo.display_title(p)}")
@@ -80,18 +81,18 @@ class PodcastSettingsDialog(QDialog):
 
     def _save(self) -> None:
         pid = self.podcast_id
-        repo.set_podcast_setting(pid, "custom_title", self.custom_title.text().strip() or None)
-        repo.set_podcast_setting(
+        self.client.set_podcast_setting(pid, "custom_title", self.custom_title.text().strip() or None)
+        self.client.set_podcast_setting(
             pid, "playback_speed", self.speed.value() if self.speed.value() > 0 else None
         )
-        repo.set_podcast_setting(pid, "skip_intro_secs", self.skip_intro.value() or None)
-        repo.set_podcast_setting(pid, "skip_outro_secs", self.skip_outro.value() or None)
+        self.client.set_podcast_setting(pid, "skip_intro_secs", self.skip_intro.value() or None)
+        self.client.set_podcast_setting(pid, "skip_outro_secs", self.skip_outro.value() or None)
         auto, position = {
             0: (None, None),      # inherit the global default
             1: (1, "front"),
             2: (1, "back"),
             3: (0, None),
         }[self.auto_add.currentIndex()]
-        repo.set_podcast_setting(pid, "auto_add_to_queue", auto)
-        repo.set_podcast_setting(pid, "auto_queue_position", position)
+        self.client.set_podcast_setting(pid, "auto_add_to_queue", auto)
+        self.client.set_podcast_setting(pid, "auto_queue_position", position)
         self.accept()

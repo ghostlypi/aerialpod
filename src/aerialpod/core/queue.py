@@ -37,16 +37,13 @@ def is_finished(ep: Episode) -> bool:
     return False
 
 
-class QueueManager(QObject):
-    queueChanged = Signal()
-    syncNeeded = Signal()  # an action was enqueued that the phone should see soon
-    intentChanged = Signal()  # the user changed the queue — LAN peers want this now
+class QueueReader:
+    """The read half of the queue.
 
-    def __init__(self, parent: QObject | None = None):
-        super().__init__(parent)
-        self.playing_episode_id: int | None = None  # kept current by PlayerService
-
-    # ------------------------------------------------------------ queries
+    Split out so the UI process can answer "what's in the queue, what's next"
+    straight from SQLite while every mutation goes to whichever process owns
+    the writes — see aerialpod.ipc.
+    """
 
     def episodes(self) -> list[Episode]:
         return repo.queue_episodes()
@@ -64,6 +61,16 @@ class QueueManager(QObject):
 
     def contains(self, episode_id: int) -> bool:
         return any(q.episode_id == episode_id for q in repo.queue_items())
+
+
+class QueueManager(QObject, QueueReader):
+    queueChanged = Signal()
+    syncNeeded = Signal()  # an action was enqueued that the phone should see soon
+    intentChanged = Signal()  # the user changed the queue — LAN peers want this now
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
+        self.playing_episode_id: int | None = None  # set by whoever owns playback
 
     # ------------------------------------------------------------ user ops
 
@@ -140,6 +147,25 @@ class QueueManager(QObject):
                     pinned=1 if moved else (q.pinned if q else 0),
                     origin="manual" if moved else (q.origin if q else "auto"),
                 )
+        self.queueChanged.emit()
+        self.intentChanged.emit()
+
+    def pin(self, episode_id: int) -> None:
+        """Hold this row where it is. Recorded as intent like any other user
+        decision — the queue page used to set the flag with raw SQL, which meant
+        a pin never reached the other devices."""
+        with db.transaction() as conn:
+            conn.execute(
+                "UPDATE queue SET pinned=1, origin='manual' WHERE episode_id=?",
+                (episode_id,),
+            )
+            row = conn.execute(
+                "SELECT position FROM queue WHERE episode_id=?", (episode_id,)
+            ).fetchone()
+            if row is None:
+                return
+            repo.record_intent(conn, episode_id, "queued", position=row["position"],
+                               pinned=1, origin="manual")
         self.queueChanged.emit()
         self.intentChanged.emit()
 

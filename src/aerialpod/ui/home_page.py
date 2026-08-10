@@ -64,9 +64,10 @@ class HomePage(QWidget):
     navigateRequested = Signal(str)   # nav key
     podcastOpened = Signal(int)
 
-    def __init__(self, queue, parent=None):
+    def __init__(self, queue, client, parent=None):
         super().__init__(parent)
         self.queue = queue
+        self.client = client
 
         outer = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -164,7 +165,7 @@ class HomePage(QWidget):
     def _customize(self) -> None:
         dlg = SectionsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            repo.set_state("home_sections", dlg.result_order())
+            self.client.set_state("home_sections", dlg.result_order())
             self.reload()
 
 

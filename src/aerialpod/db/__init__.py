@@ -18,11 +18,21 @@ _local = threading.local()
 _db_path: Path | None = None
 
 
-def init(path: Path | None = None) -> None:
-    """Set the database path and run migrations. Call once at startup."""
+def init(path: Path | None = None, migrate: bool = True) -> None:
+    """Set the database path and (by default) run migrations.
+
+    Only the process that owns writes should migrate. When the UI is talking to
+    a daemon it opens with migrate=False, so two processes can never race to
+    apply the same schema step — see aerialpod.ipc.
+    """
     global _db_path
     _db_path = path or config.db_path()
-    migrations.migrate(connection())
+    if migrate:
+        migrations.migrate(connection())
+
+
+def schema_version() -> int:
+    return connection().execute("PRAGMA user_version").fetchone()[0]
 
 
 def connection() -> sqlite3.Connection:

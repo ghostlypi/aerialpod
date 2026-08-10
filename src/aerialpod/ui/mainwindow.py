@@ -1,10 +1,16 @@
-"""Main window: sidebar navigation + stacked pages + bottom player bar."""
+"""Main window: sidebar navigation + stacked pages + bottom player bar.
+
+The window owns playback and nothing else. Everything that changes stored state
+goes through DaemonClient — usually to a background daemon, sometimes to
+services running in this process (see aerialpod.ipc). Reads go straight to
+SQLite, so pages query `repo` exactly as they always did.
+"""
 
 from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -17,14 +23,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.downloads import DownloadManager
 from ..core.player import PlayerService
-from ..core.queue import QueueManager
-from ..db import repo
-from ..feeds.refresher import Refresher
+from ..core.queue import QueueReader
 from ..core.sleeptimer import SleepTimer
-from ..gpodder.sync import SyncScheduler, start_sync_service
-from ..lan.service import LanScheduler, start_lan_service
+from ..db import repo
 from ..mpris.service import MprisBridge
 from .home_page import HomePage
 from .inbox_page import InboxPage
@@ -48,36 +50,21 @@ NAV = [
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, dry_run_sync: bool = False):
+    def __init__(self, client):
         super().__init__()
-        self.dry_run_sync = dry_run_sync
+        self.client = client
+        self.queue = QueueReader()  # reads only; writes go through the client
         self.setWindowTitle("AerialPod")
         self.setObjectName("MainWindow")
         self.resize(1100, 720)
         self._restore_geometry()
 
-        # ---- services
-        self.queue = QueueManager(self)
-        self.player = PlayerService(self)
-        self.player.episodeChanged.connect(
-            lambda ep: setattr(self.queue, "playing_episode_id", ep.id if ep else None)
-        )
+        # ---- playback (the one thing that stays in this process)
+        self.player = PlayerService(client, self)
+        self.player.episodeChanged.connect(self._on_episode_changed)
         self.player.episodeFinished.connect(self._on_episode_finished)
         self.player.errorOccurred.connect(lambda msg: self._status(msg, 8000))
-        self.refresher = Refresher(self)
-        self.refresher.refreshStarted.connect(lambda: self._status("Refreshing feeds…"))
-        self.refresher.podcastRefreshed.connect(self._on_podcast_refreshed)
-        self.refresher.refreshFinished.connect(self._on_refresh_finished)
-        self.refresher.refreshError.connect(
-            lambda pid, msg: self._status(f"Feed refresh failed: {msg}", 8000)
-        )
-        self.queue.queueChanged.connect(self._on_queue_changed)
-        self.downloads = DownloadManager(self.queue, self)
-        self.downloads.downloadFinished.connect(
-            lambda eid: self._status("Episode downloaded", 3000)
-        )
-        # MPRIS (media keys, shell media widget) is a Linux/D-Bus thing;
-        # on macOS the app runs without it.
+
         import sys as _sys
 
         self.mpris = None
@@ -92,34 +79,22 @@ class MainWindow(QMainWindow):
         self.theme = ThemeManager(QApplication.instance(), self)
         self.theme.apply()
 
-        self.sync_service, self.sync_thread = start_sync_service(dry_run=dry_run_sync)
-        self.sync_scheduler = SyncScheduler(self.sync_service, self)
-        # SyncService lives on another thread: connect ONLY to bound methods of
-        # main-thread QObjects (lambdas/free functions would run in the sync
-        # thread and touch widgets there — crash).
-        self.sync_service.syncStarted.connect(self._on_sync_started)
-        self.sync_service.syncFinished.connect(self._on_sync_finished)
-        self.sync_service.syncFailed.connect(self._on_sync_failed)
-        self.sync_service.actionsApplied.connect(self.queue.reconcile)
-        self.sync_service.subscriptionsChanged.connect(self._on_new_subscriptions)
-        self.player.playbackStateChanged.connect(
-            lambda _s: self.sync_scheduler.trigger_debounced()
-        )
-        # push mark-played (and future outbox-writing queue ops) promptly
-        self.queue.syncNeeded.connect(self.sync_scheduler.trigger_debounced)
-
-        # ---- LAN sync (other AerialPod installs on this network / VPN)
-        self.lan_service, self.lan_thread = start_lan_service()
-        self.lan = LanScheduler(self.lan_service, self)
-        # Same rule as the sync service: bound methods of main-thread objects
-        # only, never lambdas — a lambda would run in the LAN thread.
-        self.lan_service.stateMerged.connect(self._on_lan_merged)
-        self.lan_service.peersChanged.connect(self._on_lan_peers)
-        self.lan_service.statusChanged.connect(self._on_lan_status)
-        self.queue.intentChanged.connect(self.lan.push_snapshot_soon)
-        self.player.positionChanged.connect(self._on_player_position)
-        self.player.playbackStateChanged.connect(self._on_lan_playback_state)
-        self.player.seeked.connect(self._on_lan_seeked)
+        # ---- daemon signals. Bound methods only: with the D-Bus backend these
+        # arrive from another thread, and a lambda would run there.
+        client.queueChanged.connect(self._on_queue_changed)
+        client.syncStarted.connect(self._on_sync_started)
+        client.syncFinished.connect(self._on_sync_finished)
+        client.syncFailed.connect(self._on_sync_failed)
+        client.subscriptionsChanged.connect(self._on_new_subscriptions)
+        client.refreshStarted.connect(self._on_refresh_started)
+        client.refreshFinished.connect(self._on_refresh_finished)
+        client.refreshError.connect(self._on_refresh_error)
+        client.podcastRefreshed.connect(self._on_podcast_refreshed)
+        client.downloadFinished.connect(self._on_download_finished)
+        client.peersChanged.connect(self._on_lan_peers)
+        client.lanStatus.connect(self._on_lan_status)
+        client.stateMerged.connect(self._on_lan_merged)
+        client.availabilityChanged.connect(self._on_daemon_availability)
 
         # ---- layout
         central = QWidget()
@@ -150,38 +125,32 @@ class MainWindow(QMainWindow):
         self.podcast_page = PodcastPage()
         self.podcast_page.backRequested.connect(lambda: self._show_page("subscriptions"))
         self.podcast_page.playRequested.connect(self.play_episode)
-        self.podcast_page.queueToggled.connect(self.queue.toggle)
-        self.podcast_page.refreshRequested.connect(self.refresher.refresh_one)
+        self.podcast_page.queueToggled.connect(client.queue_toggle)
+        self.podcast_page.refreshRequested.connect(client.refresh_one)
         self.podcast_page.unsubscribeRequested.connect(self.unsubscribe)
         self.podcast_page.settingsRequested.connect(self._podcast_settings)
         self.podcast_page.markPlayedRequested.connect(self._mark_played)
-        self.podcast_page.markUnplayedRequested.connect(self.queue.mark_unplayed)
+        self.podcast_page.markUnplayedRequested.connect(client.mark_unplayed)
 
-        self.settings_page = SettingsPage()
-        self.settings_page.syncRequested.connect(self.sync_scheduler.trigger)
+        self.settings_page = SettingsPage(client)
         self.settings_page.themeChanged.connect(self.theme.apply)
-        self.settings_page.opmlImported.connect(self._on_new_subscriptions)
-        self.settings_page.lanSettingsChanged.connect(self.lan.restart)
-        self.settings_page.lanPairingChanged.connect(self.lan.restart)
-        self.settings_page.lanPeerAdded.connect(self.lan.add_peer)
-        self.settings_page.lanDiscoverRequested.connect(self.lan.discover)
 
-        self.home_page = HomePage(self.queue)
+        self.home_page = HomePage(self.queue, client)
         self.home_page.playRequested.connect(self.play_episode)
-        self.home_page.queueToggled.connect(self.queue.toggle)
+        self.home_page.queueToggled.connect(client.queue_toggle)
         self.home_page.markPlayedRequested.connect(self._mark_played)
-        self.home_page.markUnplayedRequested.connect(self.queue.mark_unplayed)
+        self.home_page.markUnplayedRequested.connect(client.mark_unplayed)
         self.home_page.navigateRequested.connect(self._nav_to)
         self.home_page.podcastOpened.connect(self.open_podcast)
 
-        self.queue_page = QueuePage(self.queue)
+        self.queue_page = QueuePage(self.queue, client)
         self.queue_page.playRequested.connect(self.play_episode)
 
         self.inbox_page = InboxPage()
         self.inbox_page.playRequested.connect(self.play_episode)
-        self.inbox_page.queueToggled.connect(self.queue.toggle)
+        self.inbox_page.queueToggled.connect(client.queue_toggle)
         self.inbox_page.markPlayedRequested.connect(self._mark_played)
-        self.inbox_page.markUnplayedRequested.connect(self.queue.mark_unplayed)
+        self.inbox_page.markUnplayedRequested.connect(client.mark_unplayed)
 
         page_map: dict[str, QWidget] = {
             "home": self.home_page,
@@ -209,14 +178,8 @@ class MainWindow(QMainWindow):
         self.nav.setCurrentRow(0)
         self.subscriptions_page.reload()
         self.home_page.reload()
-        self.queue.queueChanged.connect(self._maybe_reload_home)
 
         self._setup_shortcuts()
-
-        # initial refresh + sync shortly after startup
-        QTimer.singleShot(1500, self.refresher.refresh_all)
-        QTimer.singleShot(3000, self.sync_scheduler.trigger)
-        QTimer.singleShot(2000, self.lan.start)
 
     def _setup_shortcuts(self) -> None:
         from PySide6.QtGui import QKeySequence, QShortcut
@@ -228,8 +191,8 @@ class MainWindow(QMainWindow):
         sc("Right", lambda: self.player.seek_relative(int(repo.get_state("skip_fwd_secs"))))
         sc("Left", lambda: self.player.seek_relative(-int(repo.get_state("skip_back_secs"))))
         sc("Ctrl+N", self._play_next_in_queue)
-        sc("Ctrl+R", self.refresher.refresh_all)
-        sc("Ctrl+S", self.sync_scheduler.trigger)
+        sc("Ctrl+R", self.client.refresh_all)
+        sc("Ctrl+S", self.client.sync_now)
         for i, (key, _label) in enumerate(NAV, start=1):
             sc(f"Ctrl+{i}", lambda k=key: self._nav_to(k))
 
@@ -269,10 +232,9 @@ class MainWindow(QMainWindow):
             self.home_page.reload()
 
     def _podcast_settings(self, podcast_id: int) -> None:
-        dlg = PodcastSettingsDialog(podcast_id, self)
+        dlg = PodcastSettingsDialog(podcast_id, self.client, self)
         if dlg.exec():
             self.podcast_page.reload()
-            self.queue.reconcile()
 
     def _status(self, message: str, msecs: int = 4000) -> None:
         self.statusBar().showMessage(message, msecs)
@@ -280,17 +242,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- actions
 
     def subscribe(self, feed_url: str) -> None:
-        pid = repo.upsert_podcast(feed_url)
+        self.client.subscribe(feed_url)
         self._status(f"Subscribed — fetching {feed_url}")
-        self.subscriptions_page.reload()
-        self.refresher.refresh_one(pid)
 
     def unsubscribe(self, podcast_id: int) -> None:
-        repo.unsubscribe_podcast(podcast_id)
+        self.client.unsubscribe(podcast_id)
         self._status("Unsubscribed")
         self._show_page("subscriptions")
-        self.subscriptions_page.reload()
-        self.queue.reconcile()
 
     def open_podcast(self, podcast_id: int) -> None:
         self.podcast_page.show_podcast(podcast_id)
@@ -299,13 +257,19 @@ class MainWindow(QMainWindow):
     def play_episode(self, episode_id: int) -> None:
         self.player.play_episode(episode_id)
 
+    def _on_episode_changed(self, ep) -> None:
+        self.client.set_playing(ep.id if ep else None)
+
     def _on_episode_finished(self, episode_id: int) -> None:
-        nxt = self.queue.mark_played_and_advance(episode_id)
-        if nxt is not None:
+        # Read the next episode before asking the daemon to retire this one:
+        # reads are local, so this needs no round trip and no return value.
+        nxt = self.queue.next_after(episode_id)
+        self.client.mark_played(episode_id)
+        if nxt is not None and nxt.id != episode_id:
             self.player.play_episode(nxt.id)
 
     def _mark_played(self, episode_id: int) -> None:
-        self.queue.mark_played_and_advance(episode_id)
+        self.client.mark_played(episode_id)
 
     def _play_next_in_queue(self) -> None:
         current = self.player.episode
@@ -334,16 +298,29 @@ class MainWindow(QMainWindow):
         if self.pages.currentIndex() == self._page_index["subscriptions"]:
             self.subscriptions_page.reload()
 
+    def _on_refresh_started(self) -> None:
+        self._status("Refreshing feeds…")
+
     def _on_refresh_finished(self, new_total: int) -> None:
         self._status(f"Feeds refreshed — {new_total} new episode(s)")
-        self.queue.reconcile()
+
+    def _on_refresh_error(self, _podcast_id: int, message: str) -> None:
+        self._status(f"Feed refresh failed: {message}", 8000)
+
+    def _on_download_finished(self, _episode_id: int) -> None:
+        self._status("Episode downloaded", 3000)
 
     def _on_queue_changed(self) -> None:
         # Refresh whatever page is visible so +/− buttons stay accurate.
-        if self.pages.currentIndex() == self._page_index["podcast"]:
+        current = self.pages.currentIndex()
+        if current == self._page_index["podcast"]:
             self.podcast_page.reload()
-        elif self.pages.currentIndex() == self._page_index["inbox"]:
+        elif current == self._page_index["inbox"]:
             self.inbox_page.reload()
+        elif current == self._page_index["queue"]:
+            self.queue_page.reload()
+        elif current == self._page_index["home"]:
+            self.home_page.reload()
 
     def _on_sync_started(self) -> None:
         self._status("Syncing with gpodder.net…")
@@ -356,15 +333,11 @@ class MainWindow(QMainWindow):
         self._status(f"Sync failed: {message}", 8000)
         self.settings_page.show_sync_status(f"Sync failed: {message}")
 
-    # ------------------------------------------------------------- LAN sync
+    def _on_new_subscriptions(self, _podcast_ids: list) -> None:
+        self.subscriptions_page.reload()
 
     def _on_lan_merged(self, counts: dict) -> None:
-        """A peer's state landed — re-derive the queue and refresh the view."""
-        self.queue.reconcile()
-        self._maybe_reload_home()
         self._on_queue_changed()
-        if self.pages.currentIndex() == self._page_index["queue"]:
-            self.queue_page.reload()
         if counts.get("intents") or counts.get("settings"):
             self._status("Synced with a device on your network", 4000)
 
@@ -377,20 +350,12 @@ class MainWindow(QMainWindow):
     def _on_lan_status(self, message: str) -> None:
         self.settings_page.show_lan_status(message)
 
-    def _on_player_position(self, _secs: int, _total: int) -> None:
-        ep = self.player.episode
-        self.lan.note_position(ep.id if ep else None)
-
-    def _on_lan_playback_state(self, _state) -> None:
-        self.lan.flush_now()
-
-    def _on_lan_seeked(self, _secs: int) -> None:
-        self.lan.flush_now()
-
-    def _on_new_subscriptions(self, podcast_ids: list) -> None:
-        self.subscriptions_page.reload()
-        for pid in podcast_ids:
-            self.refresher.refresh_one(pid)
+    def _on_daemon_availability(self, available: bool) -> None:
+        if available:
+            self._on_queue_changed()
+            self.subscriptions_page.reload()
+        else:
+            self._status("Background service went away — reconnecting…", 6000)
 
     # ------------------------------------------------------------- geometry
 
@@ -404,14 +369,5 @@ class MainWindow(QMainWindow):
         self.player.shutdown()
         if self.mpris is not None:
             self.mpris.shutdown()
-        self.lan.stop()
-        self.lan_thread.quit()
-        if not self.lan_thread.wait(2000):
-            log.warning("LAN sync thread still busy at close")
-        self.sync_service.request_abort()
-        self.sync_thread.quit()
-        if not self.sync_thread.wait(4000):
-            # A sync is stuck in a network call. main() hard-exits the process
-            # rather than letting a running QThread be destructed (→ abort).
-            log.warning("sync thread still busy at close; will hard-exit")
+        self.client.shutdown()
         super().closeEvent(event)

@@ -1,4 +1,12 @@
-"""AerialPod entry point: QApplication, single-instance guard, wiring."""
+"""AerialPod entry point: QApplication, single-instance guard, wiring.
+
+The window is a front end. Sync, the peer mesh, feed refresh, the queue and
+downloads normally live in a daemon that starts with your session; this process
+connects to it, reads SQLite directly, and sends commands for anything that
+changes. If no daemon can be reached — no session bus, not installed, not
+running — it falls back to running those services here, which is what the app
+did before the split and remains the macOS story.
+"""
 
 from __future__ import annotations
 
@@ -47,10 +55,48 @@ def _already_running() -> bool:
     return False
 
 
+def _make_backend(args):
+    """Pick a backend, preferring the daemon.
+
+    The probe is a real, synchronous D-Bus round trip, which also gets the
+    ordering right: activation starts the daemon, and the daemon migrates the
+    database before it takes the bus name, so by the time this returns the
+    schema is current and this process must not migrate it again.
+    """
+    from .ipc.inprocess import InProcessBackend
+
+    if args.no_daemon or not sys.platform.startswith("linux"):
+        db.init()
+        return InProcessBackend(dry_run_sync=args.dry_run_sync)
+
+    from .ipc.dbusclient import DBusBackend, probe_daemon
+
+    info = probe_daemon()
+    if info is not None:
+        app_version, schema = info
+        db.init(migrate=False)
+        if schema > len(db.migrations.MIGRATIONS):
+            log.error(
+                "the background service (v%s) uses database schema %d, newer than "
+                "this window understands (%d) — restart AerialPod after updating",
+                app_version, schema, len(db.migrations.MIGRATIONS),
+            )
+            return None
+        log.info("connected to the AerialPod service (v%s, schema %d)", app_version, schema)
+        return DBusBackend()
+
+    log.info("no background service reachable — running sync in this window")
+    db.init()
+    return InProcessBackend(dry_run_sync=args.dry_run_sync)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog=APP_NAME)
     parser.add_argument("--dry-run-sync", action="store_true",
-                        help="log gpodder POSTs instead of sending them")
+                        help="log gpodder POSTs instead of sending them "
+                             "(in-process only; the daemon has its own flag)")
+    parser.add_argument("--no-daemon", action="store_true",
+                        help="run sync in this process instead of connecting to the service")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -73,11 +119,15 @@ def main() -> int:
     # ctrl-c works in a terminal
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    db.init()
+    backend = _make_backend(args)
+    if backend is None:
+        return 1
 
+    from .ipc.client import DaemonClient
     from .ui.mainwindow import MainWindow
 
-    win = MainWindow(dry_run_sync=args.dry_run_sync)
+    client = DaemonClient(backend)
+    win = MainWindow(client)
 
     QLocalServer.removeServer(_SOCKET_NAME)
     server = QLocalServer()
@@ -85,8 +135,10 @@ def main() -> int:
     server.newConnection.connect(lambda: (win.show(), win.raise_(), win.activateWindow()))
 
     win.show()
+    client.start()
     rc = app.exec()
-    if win.sync_thread.isRunning() or win.lan_thread.isRunning():
+
+    if getattr(backend, "threads_running", False):
         # A sync is blocked on the network. Destroying a running QThread
         # aborts the process with a core dump — exit cleanly instead. All
         # state was already persisted in closeEvent.

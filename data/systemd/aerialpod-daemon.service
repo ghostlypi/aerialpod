@@ -1,0 +1,20 @@
+[Unit]
+Description=AerialPod background sync
+Documentation=https://github.com/
+# Session-scoped on purpose: the daemon reads the gpodder.net account and the
+# device pairing key out of the keyring, which is only unlocked once you have
+# logged in. Nothing useful could run before that.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Type=dbus makes systemd wait until the daemon actually owns the name, so a
+# window started through D-Bus activation never races the schema migration.
+Type=dbus
+BusName=org.aerialpod.Daemon
+ExecStart=__BIN__/aerialpod-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

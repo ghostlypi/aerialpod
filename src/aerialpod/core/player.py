@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 POSITION_WRITE_MS = 5000       # throttled position persistence
 PLAY_ACTION_MS = 60000         # periodic gpodder play action while playing
 DEVICE_DEBOUNCE_MS = 400       # audioOutputsChanged fires in bursts
+VOLUME_WRITE_MS = 600          # the slider fires on every drag frame
 
 
 def _now_iso() -> str:
@@ -38,8 +39,9 @@ class PlayerService(QObject):
     devicesListChanged = Signal()
     errorOccurred = Signal(str)
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(self, client, parent: QObject | None = None):
         super().__init__(parent)
+        self.client = client
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.player.setAudioOutput(self.audio)
@@ -67,6 +69,11 @@ class PlayerService(QObject):
         self._action_timer = QTimer(self)
         self._action_timer.setInterval(PLAY_ACTION_MS)
         self._action_timer.timeout.connect(lambda: self._emit_play_action())
+
+        self._volume_write = QTimer(self)
+        self._volume_write.setSingleShot(True)
+        self._volume_write.setInterval(VOLUME_WRITE_MS)
+        self._volume_write.timeout.connect(self._persist_volume)
 
         # ---- audio devices
         self._media_devices = QMediaDevices(self)
@@ -173,7 +180,9 @@ class PlayerService(QObject):
         """User-facing volume change: apply and persist."""
         linear = max(0.0, min(1.0, float(linear)))
         self.audio.setVolume(linear)
-        repo.set_state("volume", linear)
+        # Debounced: the slider fires on every drag frame, and with a daemon
+        # each write is an IPC call.
+        self._volume_write.start()
 
     @staticmethod
     def slider_to_volume(pos: float) -> float:
@@ -190,11 +199,16 @@ class PlayerService(QObject):
             QAudio.VolumeScale.LogarithmicVolumeScale,
         )
 
+    def _persist_volume(self) -> None:
+        self.client.set_state("volume", self.audio.volume())
+
     def shutdown(self) -> None:
-        """App quit: persist position + flush a play action."""
+        """App quit: flush position and volume before the window goes."""
+        if self._volume_write.isActive():
+            self._volume_write.stop()
+            self._persist_volume()
         if self.episode is not None:
-            self._persist_position()
-            self._emit_play_action()
+            self._report(final=True)
 
     # ------------------------------------------------------------ devices
 
@@ -205,13 +219,13 @@ class PlayerService(QObject):
         return self.audio.device().description()
 
     def use_system_default(self) -> None:
-        repo.set_state("audio_device_mode", "follow_default")
+        self.client.set_state("audio_device_mode", "follow_default")
         self._apply_device_preference()
 
     def pin_device(self, device) -> None:
-        repo.set_state("audio_device_mode", "pinned")
-        repo.set_state("audio_device_id", bytes(device.id()).hex())
-        repo.set_state("audio_device_description", device.description())
+        self.client.set_state("audio_device_mode", "pinned")
+        self.client.set_state("audio_device_id", bytes(device.id()).hex())
+        self.client.set_state("audio_device_description", device.description())
         self._apply_device_preference()
 
     def _apply_device_preference(self, initial: bool = False) -> None:
@@ -269,8 +283,8 @@ class PlayerService(QObject):
 
     def _on_duration(self, ms: int) -> None:
         if self.episode is not None and ms > 0:
-            repo.update_episode(self.episode.id, total_secs=ms // 1000)
             self.episode.total_secs = ms // 1000
+            self._report(final=False)
 
     def _on_media_status(self, status) -> None:
         if status == QMediaPlayer.MediaStatus.LoadedMedia and self._pending_seek_ms:
@@ -302,44 +316,33 @@ class PlayerService(QObject):
         if ep is None:
             return
         total = self._total_secs()
-        repo.update_episode(
-            ep.id, state="played", position_secs=total, total_secs=total,
-        )
-        self._emit_play_action(position=total, total=total)
+        # Played state and the queue removal are the daemon's to apply — the
+        # window only reports where playback got to.
+        self.client.report_position(ep.id, total, total, final=True)
         self.player.stop()
         self.episode = None
         self.episodeChanged.emit(None)
         self.episodeFinished.emit(ep.id)
 
-    def _persist_position(self) -> None:
-        if self.episode is None:
-            return
-        secs = self.player.position() // 1000
-        if secs <= 0:
-            return
-        import time as _time
+    def _report(self, final: bool) -> None:
+        """Tell whoever owns the data where playback is.
 
-        repo.update_episode(
-            self.episode.id,
-            position_secs=secs,
-            total_secs=self._total_secs() or self.episode.total_secs,
-            position_updated_at=int(_time.time()),
-        )
-        self.episode.position_secs = secs
-
-    def _emit_play_action(self, position: int | None = None, total: int | None = None) -> None:
-        """Queue a gpodder 'play' episode action in the outbox."""
+        This replaced two separate write paths: a position write every 5s and a
+        gpodder action on a 60s timer plus pause/seek/stop. The split survives
+        as the `final` flag — the receiver persists every report and only
+        enqueues an action, and nudges LAN peers, on a final one.
+        """
         ep = self.episode
         if ep is None:
             return
-        p = repo.podcast_by_id(ep.podcast_id)
-        if p is None:
-            return
-        pos = position if position is not None else self.player.position() // 1000
-        tot = total if total is not None else self._total_secs()
-        if pos <= 0:
-            return
-        repo.enqueue_action(
-            p.feed_url, ep.media_url, "play", _now_iso(),
-            started=pos, position=pos, total=tot or None,
-        )
+        secs = self.player.position() // 1000
+        total = self._total_secs() or ep.total_secs
+        if secs > 0:
+            self.episode.position_secs = secs
+        self.client.report_position(ep.id, secs, total, final)
+
+    def _persist_position(self) -> None:
+        self._report(final=False)
+
+    def _emit_play_action(self, position: int | None = None, total: int | None = None) -> None:
+        self._report(final=True)

@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.aerialpod.Daemon
+Exec=__BIN__/aerialpod-daemon
+SystemdService=aerialpod-daemon.service

@@ -102,6 +102,33 @@ who gets a look at it can sync with you, so treat it like a password — and if
 one leaks, press **New code**. The keys live in the GNOME keyring, falling
 back to a `0600` file where there is no Secret Service.
 
+## The background service
+
+Sync only helps if it happens. AerialPod runs its sync work in a small daemon
+that starts with your session, so gpodder sync, feed refresh, downloads and the
+peer mesh keep going with the window closed — and, importantly, the desktop
+stays *reachable* as a peer instead of only while you happen to be looking at
+it.
+
+```sh
+systemctl --user status aerialpod-daemon     # is it running?
+journalctl --user -u aerialpod-daemon -f     # what is it doing?
+systemctl --user restart aerialpod-daemon    # after changing something by hand
+```
+
+`install.sh` enables it for you. The window connects over D-Bus
+(`org.aerialpod.Daemon`), and because the service is D-Bus activated, launching
+AerialPod starts the daemon if it isn't already up.
+
+Playback stays in the window: closing it stops the audio, as it always did.
+Everything else moves. The window reads the database directly and sends
+commands for anything that changes it, so the daemon is the only writer.
+
+**If there is no daemon** — macOS, no session bus, service disabled, or you ran
+`aerialpod --no-daemon` — the app runs those services inside the window
+instead, exactly as it did before the split. Nothing is lost except continuity
+while the window is closed.
+
 ## Install (Fedora / GNOME — any machine)
 
 ```sh

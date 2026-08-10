@@ -11,16 +11,25 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP=aerialpod
+DAEMON="$APP-daemon"
 BIN_DIR="$HOME/.local/bin"
 APPS_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 VENV_DIR="$HOME/.local/opt/$APP"
+UNIT_DIR="$HOME/.config/systemd/user"
+DBUS_DIR="$HOME/.local/share/dbus-1/services"
 
 uninstall() {
     echo "Removing AerialPod…"
+    if [[ "$(uname)" == "Linux" ]] && command -v systemctl >/dev/null; then
+        systemctl --user disable --now "$DAEMON.service" 2>/dev/null || true
+    fi
+    rm -f "$UNIT_DIR/$DAEMON.service" "$DBUS_DIR/org.aerialpod.Daemon.service"
+    command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null || true
     pipx uninstall "$APP" 2>/dev/null || true
     rm -rf "$VENV_DIR"
-    rm -f "$BIN_DIR/$APP" "$APPS_DIR/$APP.desktop" "$ICON_DIR/$APP.svg" \
+    rm -f "$BIN_DIR/$APP" "$BIN_DIR/$DAEMON" "$APPS_DIR/$APP.desktop" \
+          "$ICON_DIR/$APP.svg" \
           "$HOME/.local/share/icons/hicolor/256x256/apps/$APP.png"
     command -v update-desktop-database >/dev/null && update-desktop-database "$APPS_DIR" || true
     echo "Done. (Data in ~/.local/share/$APP and the keyring entry were kept;"
@@ -44,6 +53,7 @@ else
     "$VENV_DIR/bin/pip" install --quiet .
     mkdir -p "$BIN_DIR"
     ln -sf "$VENV_DIR/bin/$APP" "$BIN_DIR/$APP"
+    ln -sf "$VENV_DIR/bin/$DAEMON" "$BIN_DIR/$DAEMON"
 fi
 
 # --- GNOME integration (Linux only) ---------------------------------------
@@ -79,7 +89,31 @@ if [[ "$(uname)" == "Linux" ]]; then
     command -v update-desktop-database >/dev/null && update-desktop-database "$APPS_DIR" || true
     command -v gtk-update-icon-cache >/dev/null && \
         gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" || true
+
+    # --- background service --------------------------------------------
+    # Sync, the peer mesh and feed refresh live in a daemon so they keep
+    # working with the window closed. The D-Bus service file also makes it
+    # start on demand, so the window never has to wait for you to start it.
+    mkdir -p "$UNIT_DIR" "$DBUS_DIR"
+    sed "s|__BIN__|$BIN_DIR|g" data/systemd/$DAEMON.service > "$UNIT_DIR/$DAEMON.service"
+    sed "s|__BIN__|$BIN_DIR|g" data/dbus-1/org.aerialpod.Daemon.service \
+        > "$DBUS_DIR/org.aerialpod.Daemon.service"
+
+    if command -v systemctl >/dev/null; then
+        systemctl --user daemon-reload 2>/dev/null || true
+        # Restart rather than start: an update should replace the running one.
+        if systemctl --user enable "$DAEMON.service" 2>/dev/null; then
+            systemctl --user restart "$DAEMON.service" 2>/dev/null || true
+            echo "Background sync service enabled (starts with your session)."
+        else
+            echo "note: could not enable the user service — AerialPod will run" >&2
+            echo "      sync inside the window instead, which still works." >&2
+        fi
+    fi
 fi
 
 echo
 echo "Installed. Launch 'AerialPod' from the GNOME overview, or run: $BIN_DIR/$APP"
+if [[ "$(uname)" == "Linux" ]]; then
+    echo "Background service: systemctl --user status $DAEMON"
+fi

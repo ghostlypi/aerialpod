@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.queue import QueueManager
+from ..core.queue import QueueReader
 from ..db import repo
 from .episode_list import EpisodeRow
 
@@ -52,9 +52,10 @@ class QueueList(QListWidget):
 class QueuePage(QWidget):
     playRequested = Signal(int)
 
-    def __init__(self, queue: QueueManager, parent=None):
+    def __init__(self, queue: QueueReader, client, parent=None):
         super().__init__(parent)
         self.queue = queue
+        self.client = client
 
         lay = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -77,7 +78,7 @@ class QueuePage(QWidget):
         lay.addWidget(self.hint)
 
         self.list = QueueList()
-        self.list.reordered.connect(self.queue.move)
+        self.list.reordered.connect(self.client.queue_move)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._context_menu)
         self.list.itemDoubleClicked.connect(
@@ -85,7 +86,6 @@ class QueuePage(QWidget):
         )
         lay.addWidget(self.list, 1)
 
-        queue.queueChanged.connect(self.reload)
 
     def reload(self) -> None:
         self.list.clear()
@@ -100,7 +100,7 @@ class QueuePage(QWidget):
                 row = EpisodeRow(ep, podcast_title=title, fallback_cover=image,
                                  in_queue=True)
                 row.playRequested.connect(self.playRequested)
-                row.queueToggled.connect(self.queue.remove)
+                row.queueToggled.connect(self.client.queue_remove)
                 if q is not None and q.pinned:
                     row.play_btn.setToolTip("Play (pinned in place)")
                 item = QListWidgetItem()
@@ -123,20 +123,11 @@ class QueuePage(QWidget):
         q = next((x for x in repo.queue_items() if x.episode_id == eid), None)
         menu = QMenu(self)
         menu.addAction("Play", lambda: self.playRequested.emit(eid))
-        menu.addAction("Remove from queue", lambda: self.queue.remove(eid))
+        menu.addAction("Remove from queue", lambda: self.client.queue_remove(eid))
         if q is not None:
             if q.pinned:
-                menu.addAction("Release to auto", lambda: self.queue.release_to_auto(eid))
+                menu.addAction("Release to auto", lambda: self.client.queue_release_to_auto(eid))
             else:
-                menu.addAction("Pin in place", lambda: self._pin(eid))
-        menu.addAction("Mark played", lambda: self.queue.mark_played_and_advance(eid))
+                menu.addAction("Pin in place", lambda: self.client.queue_pin(eid))
+        menu.addAction("Mark played", lambda: self.client.mark_played(eid))
         menu.exec(self.list.mapToGlobal(pos))
-
-    def _pin(self, eid: int) -> None:
-        from .. import db
-
-        with db.transaction() as conn:
-            conn.execute(
-                "UPDATE queue SET pinned=1, origin='manual' WHERE episode_id=?", (eid,)
-            )
-        self.queue.queueChanged.emit()

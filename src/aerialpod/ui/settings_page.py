@@ -29,17 +29,11 @@ log = logging.getLogger(__name__)
 
 
 class SettingsPage(QWidget):
-    syncRequested = Signal()
-    accountChanged = Signal()
     themeChanged = Signal()
-    opmlImported = Signal(list)  # new podcast ids
-    lanSettingsChanged = Signal()
-    lanPairingChanged = Signal()
-    lanPeerAdded = Signal(str, int)
-    lanDiscoverRequested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, client, parent=None):
         super().__init__(parent)
+        self.client = client
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -70,7 +64,7 @@ class SettingsPage(QWidget):
         save_btn.clicked.connect(self._on_save)
         btns.addWidget(save_btn)
         sync_btn = QPushButton("Sync now")
-        sync_btn.clicked.connect(self.syncRequested)
+        sync_btn.clicked.connect(self.client.sync_now)
         btns.addWidget(sync_btn)
         forget = QPushButton("Forget account")
         forget.clicked.connect(self._on_forget)
@@ -95,14 +89,14 @@ class SettingsPage(QWidget):
         self.skip_fwd.setSuffix(" s")
         self.skip_fwd.setValue(int(repo.get_state("skip_fwd_secs")))
         self.skip_fwd.valueChanged.connect(
-            lambda v: repo.set_state("skip_fwd_secs", int(v)))
+            lambda v: self.client.set_state("skip_fwd_secs", int(v)))
         pform.addRow("Skip forward", self.skip_fwd)
         self.skip_back = QSpinBox()
         self.skip_back.setRange(5, 300)
         self.skip_back.setSuffix(" s")
         self.skip_back.setValue(int(repo.get_state("skip_back_secs")))
         self.skip_back.valueChanged.connect(
-            lambda v: repo.set_state("skip_back_secs", int(v)))
+            lambda v: self.client.set_state("skip_back_secs", int(v)))
         pform.addRow("Skip back", self.skip_back)
         self.media_next = QComboBox()
         self.media_next.addItem("Skip forward/back (ad skip)", "seek")
@@ -110,14 +104,14 @@ class SettingsPage(QWidget):
         current_next = repo.get_state("media_next_action")
         self.media_next.setCurrentIndex(0 if current_next == "seek" else 1)
         self.media_next.currentIndexChanged.connect(
-            lambda i: repo.set_state("media_next_action", self.media_next.itemData(i)))
+            lambda i: self.client.set_state("media_next_action", self.media_next.itemData(i)))
         pform.addRow("Keyboard ⏭ / ⏮ buttons", self.media_next)
 
         self.download_n = QSpinBox()
         self.download_n.setRange(0, 10)
         self.download_n.setValue(int(repo.get_state("download_ahead_n")))
         self.download_n.valueChanged.connect(
-            lambda v: repo.set_state("download_ahead_n", int(v)))
+            lambda v: self.client.set_state("download_ahead_n", int(v)))
         pform.addRow("Download next N queue items", self.download_n)
         lay.addWidget(playback)
 
@@ -255,7 +249,7 @@ class SettingsPage(QWidget):
         add_btn.clicked.connect(self._on_add_peer)
         add_row.addWidget(add_btn)
         find_btn = QPushButton("Find devices now")
-        find_btn.clicked.connect(self.lanDiscoverRequested)
+        find_btn.clicked.connect(self.client.lan_discover)
         add_row.addWidget(find_btn)
         form.addRow(add_row)
 
@@ -299,34 +293,36 @@ class SettingsPage(QWidget):
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        pairing.reset()
-        self.lan_code.setText(pairing.pairing_code())
+        self.client.lan_new_code()
         self.lan_status.setText("New code generated — pair your other devices with it.")
-        self.lanPairingChanged.emit()
 
     def _on_pair(self) -> None:
+        code = self.lan_pair_code.text()
         try:
-            pairing.pair_with_code(self.lan_pair_code.text())
+            # Checked here so a typo is reported immediately and precisely;
+            # parse_code is pure, so nothing is stored until the daemon agrees.
+            pairing.parse_code(code)
         except ValueError as exc:
             self.lan_status.setText(str(exc))
             return
+        self.client.lan_pair(code)
         self.lan_pair_code.clear()
-        self.lan_code.setText(pairing.pairing_code())
         self.lan_status.setText("Paired. Looking for that device…")
-        self.lanPairingChanged.emit()
+
+    def refresh_pairing_code(self) -> None:
+        """The key changed underneath us — show what to type on other devices."""
+        self.lan_code.setText(pairing.pairing_code())
 
     def _on_lan_enabled(self, on: bool) -> None:
-        repo.set_state("lan_sync_enabled", bool(on))
-        self.lanSettingsChanged.emit()
+        self.client.set_state("lan_sync_enabled", bool(on))
 
     def _on_lan_scan(self, on: bool) -> None:
-        repo.set_state("lan_scan_subnets", bool(on))
+        self.client.set_state("lan_scan_subnets", bool(on))
 
     def _on_lan_port(self) -> None:
         port = int(self.lan_port.value())
         if port != int(repo.get_state("lan_port")):
-            repo.set_state("lan_port", port)
-            self.lanSettingsChanged.emit()
+            self.client.set_state("lan_port", port)
 
     def _on_add_peer(self) -> None:
         text = self.lan_peer_host.text().strip()
@@ -341,15 +337,14 @@ class SettingsPage(QWidget):
                 port = int(port_text)
             except ValueError:
                 address, port = text, int(repo.get_state("lan_port"))
-        repo.add_manual_peer(address, port)
+        self.client.lan_add_peer(address, port)
         self.lan_peer_host.clear()
         self._reload_manual_peers()
-        self.lanPeerAdded.emit(address, port)
         self.lan_status.setText(f"Looking for {address} on port {port}…")
 
     def _on_remove_manual_peer(self, item) -> None:
         address, _, port = item.text().rpartition(":")
-        repo.remove_manual_peer(address, int(port))
+        self.client.lan_remove_peer(address, int(port))
         self._reload_manual_peers()
 
     def _reload_manual_peers(self) -> None:
@@ -390,27 +385,21 @@ class SettingsPage(QWidget):
         if not user or not pw:
             self.sync_status.setText("Enter username and password first.")
             return
-        credentials.save(user, pw)
+        self.client.set_account(user, pw)
         self.sync_status.setText("Saved. Starting sync…")
-        self.accountChanged.emit()
-        self.syncRequested.emit()
 
     def _on_forget(self) -> None:
-        credentials.clear()
+        self.client.forget_account()
         self.username.clear()
         self.password.clear()
-        repo.set_state("device_registered", False)
-        repo.set_state("subs_since", 0)
-        repo.set_state("actions_since", 0)
         self.sync_status.setText("Account removed.")
-        self.accountChanged.emit()
 
     def _on_theme_mode(self, idx: int) -> None:
-        repo.set_state("theme_mode", ["system", "light", "dark"][idx])
+        self.client.set_state("theme_mode", ["system", "light", "dark"][idx])
         self.themeChanged.emit()
 
     def _on_accent(self, idx: int) -> None:
-        repo.set_state("accent", self.accent.itemData(idx))
+        self.client.set_state("accent", self.accent.itemData(idx))
         self.themeChanged.emit()
 
     def show_sync_status(self, message: str) -> None:
@@ -426,14 +415,11 @@ class SettingsPage(QWidget):
     def _import_opml(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
-        from ..feeds import opml
-
         path, _ = QFileDialog.getOpenFileName(self, "Import OPML", "",
                                               "OPML files (*.opml *.xml);;All files (*)")
         if path:
-            added = opml.import_opml(path)
-            self.sync_status.setText(f"Imported {len(added)} podcast(s) from OPML.")
-            self.opmlImported.emit(added)
+            self.client.import_opml(path)
+            self.sync_status.setText("Importing podcasts from OPML…")
 
     def _export_opml(self) -> None:
         from PySide6.QtWidgets import QFileDialog
