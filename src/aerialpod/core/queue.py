@@ -6,7 +6,9 @@ Rules (see plan):
 - pinned rows are kept unless finished or unsubscribed.
 - Removed-by-user episodes live in queue_exclusions and are never auto re-added.
 - In-progress episodes insert after the playing item + leading pinned block;
-  fresh episodes append at the end in pub_date order.
+  fresh episodes append at the end in pub_date order — unless their podcast is
+  set to 'front' (see repo.effective_queue_position), which puts them at the
+  top instead, newest first.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ def is_finished(ep: Episode) -> bool:
 class QueueManager(QObject):
     queueChanged = Signal()
     syncNeeded = Signal()  # an action was enqueued that the phone should see soon
+    intentChanged = Signal()  # the user changed the queue — LAN peers want this now
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -83,7 +86,10 @@ class QueueManager(QObject):
                 "VALUES(?,?,?,?,?)",
                 (episode_id, pos, "manual", 1, int(time.time())),
             )
+            repo.record_intent(conn, episode_id, "queued", position=pos,
+                               pinned=1, origin="manual")
         self.queueChanged.emit()
+        self.intentChanged.emit()
 
     def remove(self, episode_id: int, exclude: bool = True) -> None:
         """User removal: never auto re-add (exclusion)."""
@@ -95,7 +101,10 @@ class QueueManager(QObject):
                     "VALUES(?,?)",
                     (episode_id, int(time.time())),
                 )
+                repo.record_intent(conn, episode_id, "excluded")
         self.queueChanged.emit()
+        if exclude:
+            self.intentChanged.emit()
 
     def toggle(self, episode_id: int) -> None:
         if self.contains(episode_id):
@@ -109,6 +118,7 @@ class QueueManager(QObject):
         ids = [q.episode_id for q in items if q.episode_id != episode_id]
         new_index = max(0, min(new_index, len(ids)))
         ids.insert(new_index, episode_id)
+        by_id = {q.episode_id: q for q in items}
         with db.transaction() as conn:
             for i, eid in enumerate(ids):
                 conn.execute(
@@ -118,14 +128,34 @@ class QueueManager(QObject):
                 "UPDATE queue SET pinned=1, origin='manual' WHERE episode_id=?",
                 (episode_id,),
             )
+            # An ordering is a statement about the whole list, not about the row
+            # that moved — so every row's intent carries the new order. A peer
+            # merging this adopts the order wholesale, while an episode it
+            # queued independently (newer intent of its own) still survives.
+            for i, eid in enumerate(ids):
+                q = by_id.get(eid)
+                moved = eid == episode_id
+                repo.record_intent(
+                    conn, eid, "queued", position=(i + 1) * GAP,
+                    pinned=1 if moved else (q.pinned if q else 0),
+                    origin="manual" if moved else (q.origin if q else "auto"),
+                )
         self.queueChanged.emit()
+        self.intentChanged.emit()
 
     def release_to_auto(self, episode_id: int) -> None:
         with db.transaction() as conn:
             conn.execute(
                 "UPDATE queue SET pinned=0, origin='auto' WHERE episode_id=?", (episode_id,)
             )
+            row = conn.execute(
+                "SELECT position FROM queue WHERE episode_id=?", (episode_id,)
+            ).fetchone()
+            repo.record_intent(conn, episode_id, "queued",
+                               position=row["position"] if row else 0,
+                               pinned=0, origin="auto")
         self.queueChanged.emit()
+        self.intentChanged.emit()
 
     def mark_played_and_advance(self, episode_id: int) -> Episode | None:
         """Episode finished (played out or user marked it): mark played, drop
@@ -135,6 +165,9 @@ class QueueManager(QObject):
         with db.transaction() as conn:
             conn.execute("UPDATE episodes SET state='played' WHERE id=?", (episode_id,))
             conn.execute("DELETE FROM queue WHERE episode_id=?", (episode_id,))
+            # Finishing settles any standing intent: peers derive the removal
+            # themselves from the played state / position.
+            repo.drop_intent(conn, episode_id)
 
         # If playback already reported completion (PlayerService), the episode
         # was 'played' before this call — don't enqueue a duplicate action.
@@ -165,6 +198,13 @@ class QueueManager(QObject):
         )
         with db.transaction() as conn:
             conn.execute("DELETE FROM queue_exclusions WHERE episode_id=?", (episode_id,))
+            # Recorded as intent rather than left as a bare deletion: a peer
+            # holding an older 'excluded' intent must lose this merge, or the
+            # episode the user just restored would be thrown out again.
+            last = conn.execute("SELECT MAX(position) FROM queue").fetchone()[0]
+            repo.record_intent(conn, episode_id, "queued",
+                               position=(last or 0) + GAP, pinned=0, origin="auto")
+        self.intentChanged.emit()
         p = repo.podcast_by_id(ep.podcast_id)
         if p is not None:
             from datetime import datetime, timezone
@@ -255,20 +295,34 @@ class QueueManager(QObject):
                     float_ids[ep.id] = ep.position_updated_at
             floaters = sorted(float_ids, key=float_ids.get, reverse=True)
 
-            fresh = sorted(
-                (ep for ep in candidates if ep.position_secs == 0),
+            # Untouched episodes normally land at the end, oldest first. A
+            # podcast set to 'front' — a daily show, typically — instead goes
+            # in just under the head block, newest first, so this morning's
+            # episode takes the top slot and yesterday's sits below it.
+            # Anything playing or explicitly pinned still outranks it.
+            untouched = [ep for ep in candidates if ep.position_secs == 0]
+            front = sorted(
+                (ep for ep in untouched
+                 if repo.effective_queue_position(ep.podcast_id) == "front"),
+                key=lambda e: e.pub_date or 0,
+                reverse=True,
+            )
+            back = sorted(
+                (ep for ep in untouched
+                 if repo.effective_queue_position(ep.podcast_id) != "front"),
                 key=lambda e: e.pub_date or 0,
             )
 
             order = (
                 head
+                + [ep.id for ep in front]
                 + floaters
                 + [eid for eid in rest if eid not in float_ids]
-                + [ep.id for ep in fresh]
+                + [ep.id for ep in back]
             )
             old_order = [q.episode_id for q in survivors]
             if order != old_order:
-                new_ids = {ep.id for ep in candidates} | {ep.id for ep in fresh}
+                new_ids = {ep.id for ep in candidates}
                 self._write_order(conn, order, new_ids=new_ids)
                 changed = True
 

@@ -53,7 +53,18 @@ if [[ "$(uname)" == "Linux" ]]; then
 
     # Icon: a PNG at data/icons/aerialpod.png (256×256 or 512×512, square)
     # takes priority over the bundled SVG — drop your own there and re-run.
+    # GNOME's icon loader stretches non-square PNGs to fit the square slot
+    # (a squished/oval logo shipped this way once — see git history), so
+    # verify squareness from the PNG's own IHDR chunk before installing it.
     if [[ -f data/icons/$APP.png ]]; then
+        read -r png_w < <(od -An -tu4 --endian=big -j 16 -N 4 "data/icons/$APP.png")
+        read -r png_h < <(od -An -tu4 --endian=big -j 20 -N 4 "data/icons/$APP.png")
+        if [[ "${png_w// /}" != "${png_h// /}" ]]; then
+            echo "error: data/icons/$APP.png is ${png_w// /}x${png_h// /}, not square." >&2
+            echo "       A non-square icon gets stretched into a squished oval by GNOME." >&2
+            echo "       Crop it to a square (matching its actual artwork bounds) and re-run." >&2
+            exit 1
+        fi
         cp data/icons/$APP.png "$PNG_ICON_DIR/$APP.png"
         rm -f "$ICON_DIR/$APP.svg"   # PNG wins; don't leave a competing SVG
         echo "Using custom PNG icon."

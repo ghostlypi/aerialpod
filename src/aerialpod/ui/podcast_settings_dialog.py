@@ -50,11 +50,26 @@ class PodcastSettingsDialog(QDialog):
         self.skip_outro.setValue(int(s.get("skip_outro_secs") or 0))
         form.addRow("Skip outro", self.skip_outro)
 
+        # One control for two columns: where new episodes go is only meaningful
+        # if they are auto-added at all, and splitting them into two combos
+        # invites setting a position that silently never applies.
         self.auto_add = QComboBox()
-        self.auto_add.addItems(["Global default", "Always", "Never"])
+        self.auto_add.addItems(
+            ["Global default", "Add to top of queue", "Add to bottom of queue", "Never"]
+        )
+        self.auto_add.setToolTip(
+            "Top of queue suits a daily show — each new episode lands directly "
+            "under whatever is playing, ahead of the rest of the queue."
+        )
         val = s.get("auto_add_to_queue")
-        self.auto_add.setCurrentIndex(0 if val is None else (1 if val else 2))
-        form.addRow("Auto-add new episodes to queue", self.auto_add)
+        if val is None:
+            index = 0
+        elif not val:
+            index = 3
+        else:
+            index = 1 if s.get("auto_queue_position") == "front" else 2
+        self.auto_add.setCurrentIndex(index)
+        form.addRow("New episodes", self.auto_add)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -71,6 +86,12 @@ class PodcastSettingsDialog(QDialog):
         )
         repo.set_podcast_setting(pid, "skip_intro_secs", self.skip_intro.value() or None)
         repo.set_podcast_setting(pid, "skip_outro_secs", self.skip_outro.value() or None)
-        auto = {0: None, 1: 1, 2: 0}[self.auto_add.currentIndex()]
+        auto, position = {
+            0: (None, None),      # inherit the global default
+            1: (1, "front"),
+            2: (1, "back"),
+            3: (0, None),
+        }[self.auto_add.currentIndex()]
         repo.set_podcast_setting(pid, "auto_add_to_queue", auto)
+        repo.set_podcast_setting(pid, "auto_queue_position", position)
         self.accept()

@@ -99,6 +99,60 @@ MIGRATIONS: list[str] = [
       value TEXT
     );
     """,
+    # 2 — LAN sync: replicated user intent + peer bookkeeping
+    #
+    # `queue` and `queue_exclusions` stay exactly what they are: local derived
+    # truth, rebuilt by QueueManager.reconcile() from episode state. What
+    # actually travels between peers is the *user's decisions* — "I queued
+    # this", "I threw this out", "this is the order I want" — because that is
+    # precisely what gpodder.net's protocol has no way to express.
+    #
+    # Keeping intent in its own table (rather than stamping the queue rows)
+    # buys two things: a derived reshuffle never looks like an opinion worth
+    # pushing at a peer, and un-excluding an episode is a *record* rather than
+    # a deletion — otherwise a peer's older exclusion would win the merge and
+    # silently re-exclude what the user just restored.
+    """
+    CREATE TABLE queue_intent (
+      episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+      intent TEXT NOT NULL,                    -- 'queued' | 'excluded'
+      position INTEGER NOT NULL DEFAULT 0,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      origin TEXT NOT NULL DEFAULT 'manual',
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL
+    );
+
+    ALTER TABLE podcast_settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE podcast_settings ADD COLUMN updated_by TEXT;
+
+    -- Peers we have successfully authenticated with at least once. Keyed by
+    -- the peer's LAN device id, which we only learn *after* the handshake.
+    CREATE TABLE lan_peers (
+      device_id TEXT PRIMARY KEY,
+      caption TEXT,
+      address TEXT,
+      port INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- Addresses the user pinned by hand. Separate table because a manual
+    -- entry exists before any device id is known — this is the escape hatch
+    -- for WireGuard /32 setups where there is no subnet to sweep.
+    CREATE TABLE lan_manual_peers (
+      address TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      PRIMARY KEY (address, port)
+    );
+    """,
+    # 3 — where a podcast's new episodes enter the queue.
+    #
+    # For a daily show the bottom of the queue is the wrong end: yesterday's
+    # news is not what you want to hear first. NULL inherits the global
+    # default; 'front' lands new episodes just under whatever is playing.
+    """
+    ALTER TABLE podcast_settings ADD COLUMN auto_queue_position TEXT;
+    """,
 ]
 
 

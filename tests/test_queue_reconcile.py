@@ -216,3 +216,87 @@ def test_mark_unplayed_clears_exclusion(qm, podcast, episodes):
     repo.update_episode(episodes[0], state="played")
     qm.mark_unplayed(episodes[0])    # explicit reset overrides the exclusion
     assert episodes[0] in queue_ids()
+
+
+# ------------------------------------------------- front-of-queue podcasts
+#
+# The daily-show case: a podcast set to 'front' should own the top slot each
+# time it publishes, without shoving aside what is playing or pinned.
+
+
+@pytest.fixture()
+def daily(fresh_db):
+    """A second podcast whose new episodes go to the top."""
+    pid = repo.upsert_podcast("https://example.com/daily.xml", sync_state="clean")
+    repo.update_podcast_meta(pid, title="Daily News")
+    repo.set_podcast_setting(pid, "auto_add_to_queue", 1)
+    repo.set_podcast_setting(pid, "auto_queue_position", "front")
+    return pid
+
+
+def test_front_podcast_takes_the_top_slot(qm, podcast, episodes, daily):
+    qm.reconcile()
+    assert queue_ids() == episodes
+
+    monday = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    assert queue_ids() == [monday, *episodes]
+
+
+def test_each_morning_episode_lands_above_the_last(qm, podcast, episodes, daily):
+    monday = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    tuesday = make_episode(daily, 2, pub_date=1800086400)
+    qm.reconcile()
+    # yesterday's unplayed episode stays, but today's is what you see first
+    assert queue_ids()[:2] == [tuesday, monday]
+
+
+def test_front_episodes_do_not_displace_the_playing_one(qm, podcast, episodes, daily):
+    qm.reconcile()
+    qm.playing_episode_id = episodes[0]
+    today = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    assert queue_ids()[0] == episodes[0]   # still playing
+    assert queue_ids()[1] == today         # up next
+
+
+def test_front_episodes_do_not_displace_a_pin(qm, podcast, episodes, daily):
+    qm.reconcile()
+    qm.move(episodes[3], 0)                # user pinned ep4 to the top
+    today = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    assert queue_ids()[0] == episodes[3]
+    assert queue_ids()[1] == today
+
+
+def test_front_beats_an_in_progress_episode(qm, podcast, episodes, daily):
+    """A half-listened episode floats to the top; this morning's news outranks it."""
+    qm.reconcile()
+    repo.update_episode(episodes[2], position_secs=300, total_secs=3000,
+                        position_updated_at=1799999999)
+    today = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    assert queue_ids()[:2] == [today, episodes[2]]
+
+
+def test_other_podcasts_still_append(qm, podcast, episodes, daily):
+    make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    newest = make_episode(podcast, 9, pub_date=1900000000)
+    qm.reconcile()
+    assert queue_ids()[-1] == newest
+
+
+def test_the_global_default_is_the_bottom(qm, podcast, episodes):
+    extra = make_episode(podcast, 9, pub_date=1900000000)
+    qm.reconcile()
+    assert queue_ids()[-1] == extra
+
+
+def test_a_front_podcast_can_be_set_back_to_the_bottom(qm, podcast, episodes, daily):
+    qm.reconcile()
+    repo.set_podcast_setting(daily, "auto_queue_position", "back")
+    today = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    assert queue_ids()[-1] == today

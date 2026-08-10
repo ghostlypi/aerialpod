@@ -86,7 +86,7 @@ def main() -> int:
 
     win.show()
     rc = app.exec()
-    if win.sync_thread.isRunning():
+    if win.sync_thread.isRunning() or win.lan_thread.isRunning():
         # A sync is blocked on the network. Destroying a running QThread
         # aborts the process with a core dump — exit cleanly instead. All
         # state was already persisted in closeEvent.

@@ -24,6 +24,7 @@ from ..db import repo
 from ..feeds.refresher import Refresher
 from ..core.sleeptimer import SleepTimer
 from ..gpodder.sync import SyncScheduler, start_sync_service
+from ..lan.service import LanScheduler, start_lan_service
 from ..mpris.service import MprisBridge
 from .home_page import HomePage
 from .inbox_page import InboxPage
@@ -107,6 +108,19 @@ class MainWindow(QMainWindow):
         # push mark-played (and future outbox-writing queue ops) promptly
         self.queue.syncNeeded.connect(self.sync_scheduler.trigger_debounced)
 
+        # ---- LAN sync (other AerialPod installs on this network / VPN)
+        self.lan_service, self.lan_thread = start_lan_service()
+        self.lan = LanScheduler(self.lan_service, self)
+        # Same rule as the sync service: bound methods of main-thread objects
+        # only, never lambdas — a lambda would run in the LAN thread.
+        self.lan_service.stateMerged.connect(self._on_lan_merged)
+        self.lan_service.peersChanged.connect(self._on_lan_peers)
+        self.lan_service.statusChanged.connect(self._on_lan_status)
+        self.queue.intentChanged.connect(self.lan.push_snapshot_soon)
+        self.player.positionChanged.connect(self._on_player_position)
+        self.player.playbackStateChanged.connect(self._on_lan_playback_state)
+        self.player.seeked.connect(self._on_lan_seeked)
+
         # ---- layout
         central = QWidget()
         outer = QVBoxLayout(central)
@@ -147,6 +161,10 @@ class MainWindow(QMainWindow):
         self.settings_page.syncRequested.connect(self.sync_scheduler.trigger)
         self.settings_page.themeChanged.connect(self.theme.apply)
         self.settings_page.opmlImported.connect(self._on_new_subscriptions)
+        self.settings_page.lanSettingsChanged.connect(self.lan.restart)
+        self.settings_page.lanPairingChanged.connect(self.lan.restart)
+        self.settings_page.lanPeerAdded.connect(self.lan.add_peer)
+        self.settings_page.lanDiscoverRequested.connect(self.lan.discover)
 
         self.home_page = HomePage(self.queue)
         self.home_page.playRequested.connect(self.play_episode)
@@ -198,6 +216,7 @@ class MainWindow(QMainWindow):
         # initial refresh + sync shortly after startup
         QTimer.singleShot(1500, self.refresher.refresh_all)
         QTimer.singleShot(3000, self.sync_scheduler.trigger)
+        QTimer.singleShot(2000, self.lan.start)
 
     def _setup_shortcuts(self) -> None:
         from PySide6.QtGui import QKeySequence, QShortcut
@@ -337,6 +356,37 @@ class MainWindow(QMainWindow):
         self._status(f"Sync failed: {message}", 8000)
         self.settings_page.show_sync_status(f"Sync failed: {message}")
 
+    # ------------------------------------------------------------- LAN sync
+
+    def _on_lan_merged(self, counts: dict) -> None:
+        """A peer's state landed — re-derive the queue and refresh the view."""
+        self.queue.reconcile()
+        self._maybe_reload_home()
+        self._on_queue_changed()
+        if self.pages.currentIndex() == self._page_index["queue"]:
+            self.queue_page.reload()
+        if counts.get("intents") or counts.get("settings"):
+            self._status("Synced with a device on your network", 4000)
+
+    def _on_lan_peers(self, peers: list) -> None:
+        self.settings_page.show_lan_peers(peers)
+        if peers:
+            names = ", ".join(p["caption"] for p in peers)
+            self._status(f"Device sync connected: {names}", 4000)
+
+    def _on_lan_status(self, message: str) -> None:
+        self.settings_page.show_lan_status(message)
+
+    def _on_player_position(self, _secs: int, _total: int) -> None:
+        ep = self.player.episode
+        self.lan.note_position(ep.id if ep else None)
+
+    def _on_lan_playback_state(self, _state) -> None:
+        self.lan.flush_now()
+
+    def _on_lan_seeked(self, _secs: int) -> None:
+        self.lan.flush_now()
+
     def _on_new_subscriptions(self, podcast_ids: list) -> None:
         self.subscriptions_page.reload()
         for pid in podcast_ids:
@@ -354,6 +404,10 @@ class MainWindow(QMainWindow):
         self.player.shutdown()
         if self.mpris is not None:
             self.mpris.shutdown()
+        self.lan.stop()
+        self.lan_thread.quit()
+        if not self.lan_thread.wait(2000):
+            log.warning("LAN sync thread still busy at close")
         self.sync_service.request_abort()
         self.sync_thread.quit()
         if not self.sync_thread.wait(4000):

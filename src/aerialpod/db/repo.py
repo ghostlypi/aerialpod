@@ -20,6 +20,7 @@ DEFAULTS: dict[str, Any] = {
     "skip_back_secs": 10,
     "download_ahead_n": 1,
     "auto_add_to_queue": True,
+    "auto_queue_position": "back",  # 'front' puts new episodes under the playing one
     "theme_mode": "system",  # 'system'|'light'|'dark'
     "accent": "#3584e4",
     "home_sections": ["queue", "continue", "inbox", "subscriptions"],
@@ -29,7 +30,26 @@ DEFAULTS: dict[str, Any] = {
     "audio_device_mode": "follow_default",  # or 'pinned'
     "audio_device_id": None,
     "audio_device_description": None,
+    "lan_sync_enabled": True,
+    "lan_port": 47741,
+    "lan_scan_subnets": True,  # unicast sweep of our own subnets (see lan.discovery)
 }
+
+
+def lan_device_id() -> str:
+    """Stable identity for this install on the LAN mesh.
+
+    Deliberately not the gpodder device id: that one is user-visible on
+    gpodder.net and can be renamed there, while this must stay stable for
+    peer bookkeeping and last-writer-wins tie-breaks.
+    """
+    did = get_state("lan_device_id")
+    if not did:
+        import uuid
+
+        did = uuid.uuid4().hex
+        set_state("lan_device_id", did)
+    return did
 
 
 def get_state(key: str, default: Any = None) -> Any:
@@ -121,18 +141,24 @@ def podcast_settings(pid: int) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
+SETTING_KEYS = (
+    "custom_title",
+    "playback_speed",
+    "skip_intro_secs",
+    "skip_outro_secs",
+    "auto_add_to_queue",
+    "auto_queue_position",
+)
+
+
 def set_podcast_setting(pid: int, key: str, value: Any) -> None:
-    assert key in (
-        "custom_title",
-        "playback_speed",
-        "skip_intro_secs",
-        "skip_outro_secs",
-        "auto_add_to_queue",
-    )
+    assert key in SETTING_KEYS
     connection().execute(
-        f"INSERT INTO podcast_settings(podcast_id, {key}) VALUES(?, ?) "
-        f"ON CONFLICT(podcast_id) DO UPDATE SET {key}=excluded.{key}",
-        (pid, value),
+        f"INSERT INTO podcast_settings(podcast_id, {key}, updated_at, updated_by) "
+        f"VALUES(?, ?, ?, ?) "
+        f"ON CONFLICT(podcast_id) DO UPDATE SET {key}=excluded.{key}, "
+        f"updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+        (pid, value, int(time.time()), lan_device_id()),
     )
     connection().commit()
 
@@ -142,6 +168,14 @@ def effective_auto_add(pid: int) -> bool:
     if s is None:
         return bool(get_state("auto_add_to_queue"))
     return bool(s)
+
+
+def effective_queue_position(pid: int) -> str:
+    """'front' or 'back' — where this podcast's new episodes enter the queue."""
+    value = podcast_settings(pid).get("auto_queue_position")
+    if value not in ("front", "back"):
+        value = get_state("auto_queue_position")
+    return "front" if value == "front" else "back"
 
 
 def effective_speed(pid: int) -> float:
@@ -237,6 +271,73 @@ def queue_episodes() -> list[Episode]:
     return [from_row(Episode, r) for r in rows]
 
 
+# ---------------------------------------------------------------- queue intent
+#
+# The replicated half of the queue: what the *user* decided, as opposed to
+# what reconcile() derived. Written by QueueManager's user-facing ops only.
+
+
+def record_intent(
+    conn,
+    episode_id: int,
+    intent: str,
+    *,
+    position: int = 0,
+    pinned: int = 0,
+    origin: str = "manual",
+    updated_at: int | None = None,
+    updated_by: str | None = None,
+) -> None:
+    """Upsert one intent row. Takes an explicit connection so callers can fold
+    it into the transaction that changes the queue itself."""
+    assert intent in ("queued", "excluded")
+    conn.execute(
+        "INSERT INTO queue_intent(episode_id, intent, position, pinned, origin, "
+        "updated_at, updated_by) VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(episode_id) DO UPDATE SET intent=excluded.intent, "
+        "position=excluded.position, pinned=excluded.pinned, origin=excluded.origin, "
+        "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+        (
+            episode_id,
+            intent,
+            position,
+            pinned,
+            origin,
+            updated_at if updated_at is not None else int(time.time()),
+            updated_by or lan_device_id(),
+        ),
+    )
+
+
+def queue_intents() -> list[dict[str, Any]]:
+    rows = connection().execute("SELECT * FROM queue_intent ORDER BY position")
+    return [dict(r) for r in rows]
+
+
+def intent_for(eid: int) -> dict[str, Any] | None:
+    row = connection().execute(
+        "SELECT * FROM queue_intent WHERE episode_id=?", (eid,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def drop_intent(conn, episode_id: int) -> None:
+    conn.execute("DELETE FROM queue_intent WHERE episode_id=?", (episode_id,))
+
+
+def prune_intents(max_age_secs: int = 90 * 86400) -> int:
+    """Drop intents that can no longer change anything: the episode is played
+    and the decision is old enough that no peer is still catching up."""
+    cutoff = int(time.time()) - max_age_secs
+    with transaction() as conn:
+        cur = conn.execute(
+            "DELETE FROM queue_intent WHERE updated_at < ? AND episode_id IN "
+            "(SELECT id FROM episodes WHERE state='played')",
+            (cutoff,),
+        )
+        return cur.rowcount
+
+
 def is_excluded(eid: int) -> bool:
     return (
         connection()
@@ -290,3 +391,50 @@ def log_unmatched(podcast_url: str, episode_url: str, action: str, timestamp: st
 
 def unmatched_count() -> int:
     return connection().execute("SELECT COUNT(*) FROM unmatched_actions").fetchone()[0]
+
+
+# ---------------------------------------------------------------- LAN peers
+
+
+def known_peers() -> list[dict[str, Any]]:
+    """Peers we have authenticated with before, most recently seen first."""
+    rows = connection().execute("SELECT * FROM lan_peers ORDER BY last_seen DESC")
+    return [dict(r) for r in rows]
+
+
+def remember_peer(device_id: str, caption: str, address: str, port: int) -> None:
+    connection().execute(
+        "INSERT INTO lan_peers(device_id, caption, address, port, last_seen) "
+        "VALUES(?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET "
+        "caption=excluded.caption, address=excluded.address, port=excluded.port, "
+        "last_seen=excluded.last_seen",
+        (device_id, caption, address, port, int(time.time())),
+    )
+    connection().commit()
+
+
+def forget_peer(device_id: str) -> None:
+    connection().execute("DELETE FROM lan_peers WHERE device_id=?", (device_id,))
+    connection().commit()
+
+
+def manual_peers() -> list[tuple[str, int]]:
+    rows = connection().execute(
+        "SELECT address, port FROM lan_manual_peers ORDER BY address"
+    )
+    return [(r["address"], r["port"]) for r in rows]
+
+
+def add_manual_peer(address: str, port: int) -> None:
+    connection().execute(
+        "INSERT OR IGNORE INTO lan_manual_peers(address, port) VALUES(?,?)",
+        (address, port),
+    )
+    connection().commit()
+
+
+def remove_manual_peer(address: str, port: int) -> None:
+    connection().execute(
+        "DELETE FROM lan_manual_peers WHERE address=? AND port=?", (address, port)
+    )
+    connection().commit()

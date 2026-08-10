@@ -16,6 +16,7 @@ dependencies = [
     "dbus-fast>=2",
     "platformdirs",
     "secretstorage",
+    "cryptography>=42",  # AES-GCM + HKDF for the device-to-device LAN channel
 ]
 
 [project.optional-dependencies]
