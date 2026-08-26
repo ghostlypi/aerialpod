@@ -314,12 +314,20 @@ def _renumber_queue(conn) -> None:
     """Restore the 1024-gap scheme after a merge.
 
     Positions arrive from two devices that numbered independently, so they can
-    collide; ordering by (position, episode_id) makes the flattening
-    deterministic on both ends.
+    collide. The tie-break must be a value both ends agree on: episode_id is a
+    local rowid, assigned in feed-fetch order, so two devices holding the same
+    episode break the same tie differently and diverge for good. (feed, guid)
+    is the same identity resolve_episode() addresses peers by, so it is stable
+    everywhere; media_url is the fallback for feeds with no usable GUID.
     """
     ids = [
         r["episode_id"]
-        for r in conn.execute("SELECT episode_id FROM queue ORDER BY position, episode_id")
+        for r in conn.execute(
+            "SELECT q.episode_id FROM queue q "
+            "JOIN episodes e ON e.id = q.episode_id "
+            "JOIN podcasts p ON p.id = e.podcast_id "
+            "ORDER BY q.position, p.feed_url, COALESCE(e.guid, e.media_url)"
+        )
     ]
     for i, eid in enumerate(ids, start=1):
         conn.execute("UPDATE queue SET position=? WHERE episode_id=?", (i * GAP, eid))

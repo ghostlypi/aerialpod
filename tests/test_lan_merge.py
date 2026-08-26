@@ -342,3 +342,52 @@ def test_a_new_setting_replicates_without_being_listed_twice(devices):
 
     devices.merge_into("b", devices.snapshot_of("a"))
     assert repo.effective_queue_position(1) == "front"
+
+
+def test_position_collisions_break_the_same_way_on_both_devices(tmp_path, qapp):
+    """Two devices, same episodes, different local rowids — same queue order.
+
+    Episode ids are per-install rowids handed out in feed-fetch order, so the
+    same episode is id 4 here and id 9 there. Tie-breaking a position collision
+    on that id makes each device flatten the merged queue its own way, and they
+    stay disagreed: each then ships its order to the other as intent. The
+    tie-break has to be (feed, guid), which both ends resolve identically.
+    """
+    def order_after_merge(insert_order: list[str]) -> list[str]:
+        db.close_thread_connection()
+        db.init(tmp_path / f"{'-'.join(insert_order)}.db")
+        pid = repo.upsert_podcast(FEED, sync_state="clean")
+        repo.update_podcast_meta(pid, title="Test Podcast")
+        conn = db.connection()
+        ids = {}
+        for guid in insert_order:
+            cur = conn.execute(
+                "INSERT INTO episodes(podcast_id, guid, media_url, title, pub_date, "
+                "state, position_secs, total_secs, position_updated_at) "
+                "VALUES(?,?,?,?,?,'new',0,0,0)",
+                (pid, guid, f"https://cdn.example.com/{guid}.mp3", guid, 1700000000),
+            )
+            ids[guid] = cur.lastrowid
+        # Local decision already sitting at 1024; the peer's arrives at 1024 too.
+        conn.execute(
+            "INSERT INTO queue(episode_id, position, origin, pinned, added_at) "
+            "VALUES(?,1024,'auto',0,1700000000)", (ids["guid-B"],))
+        repo.record_intent(conn, ids["guid-B"], "queued", position=1024,
+                           origin="auto", updated_at=100, updated_by="local")
+        conn.commit()
+
+        state.merge_snapshot({
+            "type": "snapshot", "v": 1, "settings": [], "positions": [],
+            "intents": [{
+                "feed": FEED, "guid": "guid-A",
+                "media": "https://cdn.example.com/guid-A.mp3",
+                "intent": "queued", "position": 1024, "pinned": 0,
+                "origin": "manual", "updated_at": 200, "updated_by": "peer",
+            }],
+        })
+        rows = conn.execute(
+            "SELECT e.guid FROM queue q JOIN episodes e ON e.id=q.episode_id "
+            "ORDER BY q.position").fetchall()
+        return [r["guid"] for r in rows]
+
+    assert order_after_merge(["guid-A", "guid-B"]) == order_after_merge(["guid-B", "guid-A"])
