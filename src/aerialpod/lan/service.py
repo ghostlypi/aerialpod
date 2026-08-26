@@ -186,6 +186,10 @@ class LanService(QObject):
         self._key: bytes | None = None
         self._sweeping = False
         self._running = False
+        # Highest replicated_version() every connected peer has been sent.
+        # A peer joining later is handed a fresh snapshot by _on_link_ready,
+        # so joining does not move this — the older peers still have not.
+        self._broadcast_version = 0
         self._status = "Device sync is starting…"
         self._retry: QTimer | None = None
         self._discovery: QTimer | None = None
@@ -212,6 +216,7 @@ class LanService(QObject):
             self._server = None
             return
         self._running = True
+        self._broadcast_version = state.replicated_version(db.connection())
         log.info("LAN sync listening on port %d as %s", port, repo.lan_device_id()[:8])
 
         self._retry = QTimer(self)
@@ -226,7 +231,7 @@ class LanService(QObject):
 
         self._resync = QTimer(self)
         self._resync.setInterval(RESYNC_INTERVAL_MS)
-        self._resync.timeout.connect(self.broadcast_snapshot)
+        self._resync.timeout.connect(self.resync_if_changed)
         self._resync.start()
 
         # Intents for episodes finished long ago can't change any outcome, and
@@ -429,11 +434,41 @@ class LanService(QObject):
 
     @Slot()
     def broadcast_snapshot(self) -> None:
+        """Send our state to every peer whether or not it has changed.
+
+        This is the change-driven path (LanScheduler debounces the burst), so
+        it must not second-guess whether there is news: replicated_version()
+        has one-second resolution and would swallow an edit made in the same
+        second as the previous push.
+        """
         if not self._by_peer:
             return
+        conn = db.connection()
+        # Read before building: a write that lands in between then leaves the
+        # recorded version stale, and the next tick re-sends. The other order
+        # would record a change this snapshot does not contain and drop it.
+        version = state.replicated_version(conn)
         snapshot = state.build_snapshot()
         for link in self._by_peer.values():
             link.send(snapshot)
+        self._broadcast_version = version
+
+    @Slot()
+    def resync_if_changed(self) -> None:
+        """The periodic safety net, minus the waste.
+
+        A full snapshot runs to hundreds of kilobytes on a large library and
+        costs the receiver a resolve_episode() lookup per record, so sending an
+        unchanged one every five minutes buys nothing. Everything that does
+        change already pushes on its own; this only covers a push that was
+        dropped with a dying link, and the peer that missed it reconnects into a
+        fresh snapshot anyway.
+        """
+        if not self._by_peer:
+            return
+        if state.replicated_version(db.connection()) == self._broadcast_version:
+            return
+        self.broadcast_snapshot()
 
     @Slot(object)
     def push_position(self, payload: object) -> None:

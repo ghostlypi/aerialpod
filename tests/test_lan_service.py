@@ -177,3 +177,76 @@ def test_announcing_with_no_peers_says_so(service, qapp):
     service.announce()
     qapp.processEvents()
     assert announced == [[]]
+
+
+# ---------------------------------------------------------------- resync
+
+
+def drain(sock: socket.socket, channel: Channel, qapp, secs: float = 0.6) -> list[dict]:
+    """Everything the service sends us in the next `secs`, and nothing more.
+
+    converse() waits for a message to arrive; this is its opposite — used to
+    show that nothing arrives, which needs a bounded window rather than a
+    deadline.
+    """
+    sock.settimeout(0.05)
+    seen: list[dict] = []
+    deadline = time.monotonic() + secs
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        out = channel.take_output()
+        if out:
+            sock.sendall(out)
+        try:
+            data = sock.recv(65536)
+        except TimeoutError:
+            continue
+        if data:
+            seen.extend(channel.feed(data))
+    return seen
+
+
+def test_periodic_resync_says_nothing_when_nothing_changed(service, qapp):
+    """A full snapshot is hundreds of KiB on a real library and costs the
+    receiver a lookup per record. Re-sending an identical one every five
+    minutes is pure waste, and on a phone it is waste paid in battery."""
+    sock, channel = dial(crypto.channel_key(SECRET))
+    try:
+        converse(sock, channel, qapp, "snapshot")   # the one sent on connect
+
+        service.resync_if_changed()
+        assert [m["type"] for m in drain(sock, channel, qapp)] == []
+    finally:
+        sock.close()
+
+
+def test_periodic_resync_sends_once_something_changes(service, qapp):
+    sock, channel = dial(crypto.channel_key(SECRET))
+    try:
+        converse(sock, channel, qapp, "snapshot")
+        service.resync_if_changed()
+        assert not drain(sock, channel, qapp), "nothing changed yet"
+
+        repo.set_podcast_setting(
+            repo.upsert_podcast("https://example.com/feed.xml"), "playback_speed", 1.5)
+
+        service.resync_if_changed()
+        assert "snapshot" in [m["type"] for m in drain(sock, channel, qapp)]
+    finally:
+        sock.close()
+
+
+def test_a_change_driven_push_never_checks_the_version(service, qapp):
+    """replicated_version() is second-resolution, so an edit landing in the
+    same second as the last push would read as 'no change'. The change-driven
+    path must therefore send unconditionally — only the timer may skip."""
+    sock, channel = dial(crypto.channel_key(SECRET))
+    try:
+        converse(sock, channel, qapp, "snapshot")
+        service.broadcast_snapshot()
+        assert "snapshot" in [m["type"] for m in drain(sock, channel, qapp)]
+
+        service.broadcast_snapshot()   # again, still nothing changed
+        assert "snapshot" in [m["type"] for m in drain(sock, channel, qapp)]
+    finally:
+        sock.close()

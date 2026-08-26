@@ -6,9 +6,22 @@ for playback positions, extended to the state gpodder cannot carry. Ties break
 on device id so that two peers resolving the same conflict never disagree.
 
 Snapshots are *complete*, not deltas: every exchange carries the whole
-replicated state. That costs a few kilobytes per sync and buys self-healing —
-a peer that was offline, or that hadn't yet fetched an episode when a record
-about it arrived, needs no cursor and no catch-up protocol to converge.
+replicated state. That buys self-healing — a peer that was offline, or that
+hadn't yet fetched an episode when a record about it arrived, needs no cursor
+and no catch-up protocol to converge. The cost stays reasonable because none of
+this is podcast data and most of it is bounded by what one person can actually
+listen to: 26 KiB for a typical library, 45 KiB for a heavy one, against a LAN
+that moves it in single-digit milliseconds.
+
+The one part that grows without that bound is exclusions — dismissing an
+episode takes a second, not an hour, and prune_intents() only reaps intents
+whose episode was *played*. Five years at ten dismissals a day reaches roughly
+4.8 MB and 0.7s to merge, which is still fine, and is why they are left alone.
+
+What is not fine is paying that on a timer for a snapshot nobody needs: every
+record costs the receiver a resolve_episode() lookup whether or not it turns
+out to be newer, so a no-op merge costs nearly as much as a real one. Hence
+replicated_version().
 
 Episodes are addressed the way peers can both resolve them: feed URL plus
 GUID, falling back to the enclosure URL through the same matching ladder the
@@ -45,6 +58,28 @@ def build_snapshot() -> dict[str, Any]:
         "settings": _build_settings(conn),
         "positions": _build_positions(conn),
     }
+
+
+def replicated_version(conn) -> int:
+    """Newest timestamp anywhere in the state a snapshot carries.
+
+    Lets a caller tell "nothing has changed since I last sent one" from "there
+    is news", without building the snapshot to find out. Reads the same three
+    sources build_snapshot() does, so a section that starts replicating is
+    covered here without having to remember to come back and add itself.
+
+    Seconds resolution, so two writes in the same second read as one version.
+    That is why only the periodic re-broadcast consults this — the change-driven
+    push sends unconditionally and cannot miss the second write.
+    """
+    row = conn.execute(
+        "SELECT MAX(v) FROM ("
+        "  SELECT MAX(updated_at) AS v FROM queue_intent"
+        "  UNION ALL SELECT MAX(updated_at) FROM podcast_settings"
+        "  UNION ALL SELECT MAX(position_updated_at) FROM episodes"
+        ")"
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def _build_intents(conn) -> list[dict[str, Any]]:

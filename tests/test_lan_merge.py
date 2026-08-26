@@ -391,3 +391,31 @@ def test_position_collisions_break_the_same_way_on_both_devices(tmp_path, qapp):
         return [r["guid"] for r in rows]
 
     assert order_after_merge(["guid-A", "guid-B"]) == order_after_merge(["guid-B", "guid-A"])
+
+
+def test_replicated_version_moves_for_every_replicated_section(devices):
+    """The version has to notice a change in any section a snapshot carries,
+    or the periodic re-broadcast that consults it will skip real news."""
+    devices.use("a")
+    conn = db.connection()
+    before = state.replicated_version(conn)
+
+    repo.update_episode(1, position_secs=90, position_updated_at=before + 10)
+    after_position = state.replicated_version(conn)
+    assert after_position > before
+
+    repo.set_podcast_setting(1, "playback_speed", 1.5)
+    conn.execute("UPDATE podcast_settings SET updated_at=? WHERE podcast_id=1",
+                 (after_position + 10,))
+    conn.commit()
+    after_setting = state.replicated_version(conn)
+    assert after_setting > after_position
+
+    repo.record_intent(conn, 2, "queued", position=1024,
+                       updated_at=after_setting + 10, updated_by="dev")
+    conn.commit()
+    assert state.replicated_version(conn) > after_setting
+
+
+def test_replicated_version_is_zero_on_an_untouched_library(fresh_db):
+    assert state.replicated_version(db.connection()) == 0

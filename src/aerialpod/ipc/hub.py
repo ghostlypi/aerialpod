@@ -286,6 +286,10 @@ class ServiceHub(QObject):
     def set_podcast_setting(self, podcast_id: int, key: str, value: Any) -> None:
         repo.set_podcast_setting(int(podcast_id), key, value)
         self.queue.reconcile()
+        # Per-podcast settings replicate, but reconcile() only emits
+        # queueChanged, and it is intentChanged that is wired to the LAN push.
+        # Without this the change sat here until the next periodic re-broadcast.
+        self.lan.push_snapshot_soon()
 
     def set_state(self, key: str, value: Any) -> None:
         repo.set_state(key, value)

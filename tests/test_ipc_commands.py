@@ -179,3 +179,30 @@ def test_queue_changes_are_announced(client, episodes, qapp):
     client.queueChanged.connect(lambda: seen.append(1))
     client.queue_add(episodes[0])
     assert seen, "the window would never refresh"
+
+
+# ---------------------------------------------------------------- replication
+
+
+def test_changing_a_podcast_setting_schedules_a_peer_push(client, podcast):
+    """Per-podcast settings replicate, but set_podcast_setting only reconciles,
+    and reconcile() emits queueChanged — while it is intentChanged that is wired
+    to the LAN push. Without an explicit push the change sat here until the next
+    periodic re-broadcast, up to five minutes later."""
+    hub = client.backend.hub
+    hub.lan._snapshot_timer.stop()
+
+    client.set_podcast_setting(podcast, "playback_speed", 1.5)
+
+    assert hub.lan._snapshot_timer.isActive(), "peers were never told"
+
+
+def test_a_queue_change_still_schedules_a_peer_push(client, episodes):
+    """The path that already worked, pinned so the settings fix can't be
+    mistaken for the only one that matters."""
+    hub = client.backend.hub
+    hub.lan._snapshot_timer.stop()
+
+    client.queue_add(episodes[1])
+
+    assert hub.lan._snapshot_timer.isActive()
