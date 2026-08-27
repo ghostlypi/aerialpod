@@ -190,6 +190,16 @@ class QueueManager(QObject, QueueReader):
         ep = repo.episode_by_id(episode_id)
         with db.transaction() as conn:
             conn.execute("UPDATE episodes SET state='played' WHERE id=?", (episode_id,))
+            # Bump the replication stamp with it. `finished` rides on the
+            # position record, and a record is only applied when it is newer
+            # than what the receiver holds — so marking played without moving
+            # the clock produces news that can never be delivered.
+            # Always, even with no position: "played" is itself the news, and
+            # it can only travel on a record that is newer than the receiver's.
+            conn.execute(
+                "UPDATE episodes SET position_updated_at=? WHERE id=?",
+                (int(time.time()), episode_id),
+            )
             conn.execute("DELETE FROM queue WHERE episode_id=?", (episode_id,))
             # Finishing settles any standing intent: peers derive the removal
             # themselves from the played state / position.
@@ -313,6 +323,14 @@ class QueueManager(QObject, QueueReader):
             ]
             float_ids: dict[int, int] = {}  # episode_id -> position_updated_at
             for eid in rest:
+                # A pinned row is the user saying "leave it where I put it",
+                # which is exactly what move() records. Floating it anyway
+                # undoes a manual reorder on the very next reconcile — and
+                # since reordering an episode you are partway through is the
+                # common case, that made moving one down impossible.
+                q = by_id.get(eid)
+                if q is not None and q.pinned:
+                    continue
                 ep = repo.episode_by_id(eid)
                 if ep and ep.position_secs > 0:
                     float_ids[eid] = ep.position_updated_at

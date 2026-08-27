@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -10,7 +11,19 @@ from aerialpod import db
 
 @pytest.fixture(scope="session")
 def qapp():
-    app = QCoreApplication.instance() or QCoreApplication([])
+    """A Qt application for tests that need an event loop or a widget.
+
+    QApplication rather than QCoreApplication because some tests construct
+    widgets, and a widget needs the GUI application to exist. "offscreen"
+    keeps that from requiring a display — set before the import, because Qt
+    reads the platform name when QApplication is first created.
+    """
+    app = QCoreApplication.instance()
+    if app is None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication([])
     yield app
 
 

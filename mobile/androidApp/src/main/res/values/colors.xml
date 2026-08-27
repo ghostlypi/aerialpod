@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only the pre-Compose window background, so the launch frame is not a
+         white flash before the theme loads. Kept identical to the desktop's
+         light `bg` token in ui/theming.py. -->
+    <color name="window_background">#FAFAFA</color>
+</resources>

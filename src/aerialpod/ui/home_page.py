@@ -111,7 +111,10 @@ class HomePage(QWidget):
         key = section.key
         if key == "queue":
             eps = self.queue.episodes()[:PREVIEW_LIMIT]
-            self._episode_list(section, eps, empty="Queue is empty — sync or add episodes.")
+            self._episode_list(
+                section, eps, empty="Queue is empty — sync or add episodes.",
+                reorderable=True,
+            )
         elif key == "continue":
             eps = repo.in_progress_episodes(PREVIEW_LIMIT)
             self._episode_list(section, eps, empty="Nothing in progress.")
@@ -144,7 +147,9 @@ class HomePage(QWidget):
             )
             section.body.addWidget(grid)
 
-    def _episode_list(self, section: _Section, eps, empty: str) -> None:
+    def _episode_list(
+        self, section: _Section, eps, empty: str, reorderable: bool = False
+    ) -> None:
         if not eps:
             hint = QLabel(empty)
             hint.setObjectName("QueueHint")
@@ -156,6 +161,12 @@ class HomePage(QWidget):
         lst.queueToggled.connect(self.queueToggled)
         lst.markPlayedRequested.connect(self.markPlayedRequested)
         lst.markUnplayedRequested.connect(self.markUnplayedRequested)
+        if reorderable:
+            lst.set_reorderable(True)
+            # The preview is the head of the queue, so its indices are the
+            # queue's own — a drag here means what the same drag means on the
+            # queue page. That holds only while the slice starts at 0.
+            lst.reordered.connect(self.client.queue_move)
         lst.setFixedHeight(76 * len(eps) + 8)
         lst.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         section.body.addWidget(lst)

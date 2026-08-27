@@ -31,7 +31,7 @@ DEFAULTS: dict[str, Any] = {
     "audio_device_id": None,
     "audio_device_description": None,
     "lan_sync_enabled": True,
-    "lan_port": 47741,
+    "lan_port": 47722,
     "lan_scan_subnets": True,  # unicast sweep of our own subnets (see lan.discovery)
 }
 

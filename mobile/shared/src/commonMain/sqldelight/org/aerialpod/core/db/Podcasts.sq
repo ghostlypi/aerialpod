@@ -1,0 +1,120 @@
+-- Subscriptions and their per-podcast settings.
+--
+-- The schema mirrors the desktop's db/migrations.py exactly (through migration
+-- 3). The two databases never share a file, so parity is not strictly forced —
+-- but keeping it means every query ported from repo.py is a copy rather than a
+-- translation, and a future protocol change lands on both sides the same way.
+
+CREATE TABLE podcasts (
+  id INTEGER PRIMARY KEY,
+  feed_url TEXT NOT NULL UNIQUE,
+  title TEXT,
+  description TEXT,
+  image_url TEXT,
+  website TEXT,
+  subscribed INTEGER NOT NULL DEFAULT 1,
+  sync_state TEXT NOT NULL DEFAULT 'clean',  -- 'clean'|'add_pending'|'remove_pending'
+  etag TEXT,
+  http_last_modified TEXT,
+  last_refresh INTEGER,
+  added_at INTEGER
+);
+
+CREATE TABLE podcast_settings (
+  podcast_id INTEGER PRIMARY KEY REFERENCES podcasts(id) ON DELETE CASCADE,
+  custom_title TEXT,
+  playback_speed REAL,
+  skip_intro_secs INTEGER,
+  skip_outro_secs INTEGER,
+  auto_add_to_queue INTEGER,  -- NULL = inherit global default
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  updated_by TEXT,
+  -- Where a podcast's new episodes enter the queue. For a daily show the bottom
+  -- is the wrong end: yesterday's news is not what you want to hear first.
+  -- NULL inherits the global default; 'front' lands new episodes just under
+  -- whatever is playing.
+  auto_queue_position TEXT
+);
+
+selectAllPodcasts:
+SELECT * FROM podcasts ORDER BY title COLLATE NOCASE;
+
+selectSubscribed:
+SELECT * FROM podcasts WHERE subscribed = 1 ORDER BY title COLLATE NOCASE;
+
+podcastById:
+SELECT * FROM podcasts WHERE id = ?;
+
+podcastByFeedUrl:
+SELECT * FROM podcasts WHERE feed_url = ?;
+
+insertPodcast:
+INSERT INTO podcasts(feed_url, sync_state, subscribed, added_at) VALUES (?, ?, ?, ?);
+
+resubscribePodcast:
+UPDATE podcasts SET subscribed = ?, sync_state = ? WHERE id = ?;
+
+unsubscribePodcast:
+UPDATE podcasts SET subscribed = 0, sync_state = 'remove_pending' WHERE id = ?;
+
+updatePodcastMeta:
+UPDATE podcasts SET title = ?, description = ?, image_url = ?, website = ?,
+  etag = ?, http_last_modified = ?, last_refresh = ? WHERE id = ?;
+
+-- A 304 still counts as a refresh: it is how we know the feed is unchanged
+-- rather than unreachable.
+setPodcastLastRefresh:
+UPDATE podcasts SET last_refresh = ? WHERE id = ?;
+
+-- Apply a gpodder update_urls rewrite. Keeps action matching working.
+rewriteFeedUrl:
+UPDATE podcasts SET feed_url = ? WHERE feed_url = ?;
+
+-- After a successful subscription upload, everything we just pushed is clean.
+markSubscriptionsClean:
+UPDATE podcasts SET sync_state = 'clean'
+WHERE sync_state IN ('add_pending', 'remove_pending');
+
+-- A remote unsubscribe: already reflected on the server, so nothing to push.
+markUnsubscribedFromServer:
+UPDATE podcasts SET subscribed = 0, sync_state = 'clean' WHERE id = ?;
+
+podcastsPendingSync:
+SELECT * FROM podcasts WHERE sync_state IN ('add_pending', 'remove_pending');
+
+lastInsertId:
+SELECT last_insert_rowid();
+
+-- ---------------------------------------------------------------- settings
+
+settingsForPodcast:
+SELECT * FROM podcast_settings WHERE podcast_id = ?;
+
+-- Bulk {podcast_id: (display_title, image_url)} — avoids per-row queries when
+-- rendering episode lists.
+podcastDisplayInfo:
+SELECT p.id, COALESCE(s.custom_title, p.title, p.feed_url) AS title, p.image_url
+FROM podcasts p LEFT JOIN podcast_settings s ON s.podcast_id = p.id;
+
+-- Everything replicated by a snapshot, joined to the feed URL peers address it
+-- by. `updated_at > 0` skips rows that exist only to hold a local default.
+settingsForSnapshot:
+SELECT s.*, p.feed_url FROM podcast_settings s
+JOIN podcasts p ON p.id = s.podcast_id WHERE s.updated_at > 0;
+
+settingsStamp:
+SELECT updated_at, updated_by FROM podcast_settings WHERE podcast_id = ?;
+
+upsertAllSettings:
+INSERT INTO podcast_settings(podcast_id, custom_title, playback_speed, skip_intro_secs,
+  skip_outro_secs, auto_add_to_queue, auto_queue_position, updated_at, updated_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(podcast_id) DO UPDATE SET
+  custom_title = excluded.custom_title,
+  playback_speed = excluded.playback_speed,
+  skip_intro_secs = excluded.skip_intro_secs,
+  skip_outro_secs = excluded.skip_outro_secs,
+  auto_add_to_queue = excluded.auto_add_to_queue,
+  auto_queue_position = excluded.auto_queue_position,
+  updated_at = excluded.updated_at,
+  updated_by = excluded.updated_by;

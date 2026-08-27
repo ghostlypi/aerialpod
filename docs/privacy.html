@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AerialPod — Privacy Policy</title>
+<meta name="description" content="How AerialPod handles your data: it does not collect any, and you choose what it syncs with.">
+<meta name="robots" content="index, follow">
+<style>
+:root{
+  color-scheme: light dark;
+  --ground:#ffffff; --ink:#1a1d21; --soft:#5a636e; --line:#e3e7ec;
+  --accent:#2b6fd4; --code:#f2f5f8;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --ground:#101317; --ink:#e6eaef; --soft:#98a3b1; --line:#252c35;
+         --accent:#7fb0f5; --code:#181d24; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+  "Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:44rem;margin:0 auto;padding:3rem 1.25rem 6rem}
+h1{font-size:1.9rem;line-height:1.2;margin:0 0 .4rem}
+h2{font-size:1.25rem;margin:2.4rem 0 .6rem;padding-top:1.2rem;
+  border-top:1px solid var(--line)}
+h3{font-size:1.02rem;margin:1.6rem 0 .4rem;color:var(--soft)}
+p,li{color:var(--ink)}
+a{color:var(--accent)}
+code{background:var(--code);padding:.12em .35em;border-radius:4px;
+  font-size:.9em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+hr{border:0;border-top:1px solid var(--line);margin:2.5rem 0}
+em{color:var(--soft)}
+table{border-collapse:collapse;width:100%;margin:1rem 0;display:block;
+  overflow-x:auto}
+th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--line);
+  vertical-align:top}
+th{font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--soft);font-weight:600}
+blockquote{margin:1rem 0;padding:.6rem 1rem;border-left:3px solid var(--accent);
+  background:var(--code);color:var(--soft)}
+.back{display:inline-block;margin-bottom:2rem;font-size:.9rem;color:var(--soft);
+  text-decoration:none}
+.back:hover{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+<a class="back" href="./">← AerialPod</a>
+<h1>AerialPod Privacy Policy</h1>
+<p><strong>Effective date:</strong> 27 August 2026
+<strong>Applies to:</strong> the AerialPod Android application (<code>org.aerialpod.android</code>)</p>
+<h2>The short version</h2>
+<p>AerialPod has no accounts, no servers, and no analytics. The developer receives
+nothing about you or your listening — not your subscriptions, not your
+positions, not crash reports, not a count of installs beyond whatever Google
+Play reports to every developer.</p>
+<p>Your library lives on your device. It leaves only in ways you switch on
+yourself, to destinations you choose, and you can switch each one off again.</p>
+<h2>Who operates AerialPod</h2>
+<p>AerialPod is an open-source podcast player. There is no AerialPod service, no
+AerialPod account, and no AerialPod server. Nothing in this app sends data to
+the developer, because there is nowhere for it to be sent.</p>
+<h2>What stays on your device</h2>
+<p>All of it, by default:</p>
+<ul>
+<li>Your subscriptions, episodes, queue, and playback positions, in a local
+  database.</li>
+<li>Downloaded episode audio and cached artwork.</li>
+<li>Your settings.</li>
+<li>If you sign in to a podcast-sync account (below), those credentials —
+  encrypted with a key held in the device's hardware-backed keystore, which
+  never leaves the device.</li>
+<li>If you pair with another of your devices (below), a pairing secret, stored
+  the same way.</li>
+</ul>
+<p>None of this is transmitted anywhere unless a section below says otherwise.</p>
+<h2>What leaves your device, and to whom</h2>
+<p>There are exactly three destinations, and you control two of them completely.</p>
+<h3>1. Podcast hosts — unavoidable, because that is what a podcast player does</h3>
+<p>To fetch a feed, artwork, or audio, your device connects directly to whatever
+server that podcast is published on. Those servers are operated by the podcast
+publishers and their hosting providers, not by AerialPod.</p>
+<p>Like any HTTP client, those requests reveal your IP address, the time of the
+request, what you asked for, and an identifying string —
+<code>AerialPod/0.1 (+https://github.com/aerialpod)</code>. AerialPod does not add any
+identifier of its own, does not send your other subscriptions, and does not
+report back what you played.</p>
+<p>This traffic is between you and the publisher. Their privacy practices are
+theirs; AerialPod has no visibility into them and no relationship with them.</p>
+<h3>2. A podcast-sync account — optional, and you choose the server</h3>
+<p>AerialPod can sync with a <a href="https://gpodder.net">gpodder.net</a>-compatible
+account. <strong>This is off until you sign in.</strong> The server address is a field you
+can edit, so you may point it at gpodder.net, at your own self-hosted instance,
+or at nothing at all.</p>
+<p>If you do sign in, AerialPod sends that server:</p>
+<ul>
+<li>Your username and password, to authenticate.</li>
+<li>Your podcast subscriptions (feed URLs), so they match across your devices.</li>
+<li>Episode actions — played, downloaded, and playback positions with timestamps.</li>
+<li>A device identifier this app generates, and a device name taken from your
+  phone's manufacturer and model (for example, "Google Pixel 8"), so the
+  service can tell your devices apart in its own interface.</li>
+</ul>
+<p>That server's operator decides what they do with it. If you use gpodder.net,
+their privacy policy governs. If you self-host, you are the operator.</p>
+<p><strong>To stop:</strong> sign out in Settings. Nothing further is sent. Removing data
+already on that server is done through that service, not through this app.</p>
+<h3>3. Your own other devices, over your local network — optional, and per device</h3>
+<p>AerialPod can sync your library directly with another device running AerialPod
+on the same network, with no server in between and nothing traversing the
+internet.</p>
+<p>This is off until you deliberately pair. Pairing requires the same code entered
+on both devices, and you add each device's address yourself — nothing is
+discovered, adopted, or trusted automatically.</p>
+<p>When on:</p>
+<ul>
+<li>Traffic goes <strong>directly</strong> between your two devices. It does not pass through
+  the developer or any third party.</li>
+<li>Every frame is encrypted with AES-GCM under per-direction session keys
+  derived from your pairing code. A device without that code cannot read the
+  traffic or complete the handshake.</li>
+<li>What is exchanged is your queue, playback positions, played state, and
+  per-podcast settings.</li>
+<li>The Android app <strong>never listens for incoming connections.</strong> It only dials out
+  to addresses you added. It cannot be connected to.</li>
+</ul>
+<p><strong>To stop:</strong> remove the paired device, or reset the pairing code, in Settings.</p>
+<h2>What AerialPod never does</h2>
+<ul>
+<li>No analytics, telemetry, or usage measurement of any kind.</li>
+<li>No advertising, and no advertising identifiers.</li>
+<li>No crash or diagnostic reporting to the developer.</li>
+<li>No third-party trackers or SDKs. The app's dependencies are Android system
+  libraries, a media player, an HTTP client, and an image loader — none of
+  which are configured to report anywhere.</li>
+<li>No selling or sharing of personal information, because none is collected.</li>
+<li>No profile of you, anywhere.</li>
+</ul>
+<h2>Permissions, and why each exists</h2>
+<table>
+<thead>
+<tr>
+<th>Permission</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Internet, network state</td>
+<td>Fetch feeds and audio; notice when the network changes</td>
+</tr>
+<tr>
+<td>Local network access</td>
+<td>Connect to <em>your own</em> device on your LAN for direct sync. Used for nothing else — no scanning for other devices, no location</td>
+</tr>
+<tr>
+<td>Foreground service (media playback)</td>
+<td>Keep playing when the app is not in front</td>
+</tr>
+<tr>
+<td>Notifications</td>
+<td>Show the playback controls</td>
+</tr>
+</tbody>
+</table>
+<p>Android may describe local network access in terms of finding "nearby devices".
+AerialPod uses it only to open a connection to an address you typed in yourself.</p>
+<h2>Your controls</h2>
+<ul>
+<li><strong>Delete everything:</strong> uninstall the app, or use Android's <em>Clear storage</em>.
+  This removes the library, downloads, credentials, and pairing secret from the
+  device. Nothing survives elsewhere, because there is nowhere else.</li>
+<li><strong>Stop account sync:</strong> sign out in Settings.</li>
+<li><strong>Stop device sync:</strong> unpair in Settings.</li>
+<li><strong>Delete downloads:</strong> remove them in the app; streaming continues to work.</li>
+</ul>
+<h2>Children</h2>
+<p>AerialPod is not directed at children and collects nothing from anyone,
+including children.</p>
+<h2>Changes</h2>
+<p>If this policy changes, the updated version will be published at the same
+address, with a new effective date. Material changes affecting what leaves your
+device will be noted in the app's release notes.</p>
+<h2>Contact</h2>
+<p>FILL-IN-CONTACT</p>
+<hr />
+<p><em>AerialPod is open source. If you would rather verify than take this on trust,
+the network behaviour described above is in <code>lan/</code>, <code>gpodder/</code>, and <code>feeds/</code> in
+the source.</em></p>
+</main>
+</body>
+</html>

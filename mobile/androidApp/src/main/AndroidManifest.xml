@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Feeds, gpodder.net, downloads, and dialling peers on the LAN. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- ConnectivityManager.NetworkCallback, which drives onPathChanged() in
+         step 6.4. Registering the callback without this throws. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      Android 16 introduced Local Network Protection and Android 17 enforces it:
+      INTERNET no longer covers connecting to an address on the local network,
+      which is the whole of device sync. Without this the platform drops the
+      connection before it leaves the phone — no error, nothing in the peer's
+      log, and `appops` showing `ACCESS_LOCAL_NETWORK: ignore` as the only
+      evidence anywhere.
+
+      Runtime-requested from the Device sync screen, so the prompt arrives when
+      the user is actually trying to pair — the same reasoning the iOS
+      local-network prompt gets in docs/mobile-lan-sync.md. Unknown to older
+      releases, which ignore it.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+
+    <!-- Playback continues while the app is backgrounded (step 6.2). Android 14+
+         requires the typed permission alongside the base one, and the service
+         must declare a matching foregroundServiceType. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- The media notification. Runtime-requested from the player screen in 6.2;
+         denial costs the notification, not playback. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      allowBackup="false" deliberately. Two things here must not be copied onto
+      a second device: the pairing secret, which is the peer channel's only
+      credential, and `lan_device_id`, which the mesh assumes is unique — it is
+      what the last-writer-wins tie-break compares when two devices stamp the
+      same second. A restore that produced two phones claiming one identity
+      would misbehave quietly rather than fail. The library itself is not worth
+      the risk to protect: it rebuilds from gpodder.net or from a peer, which is
+      the same claim milestone M4 makes.
+    -->
+    <application
+        android:name=".AerialPodApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AerialPod">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density|fontScale"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.AerialPod">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          The media session lives in a foreground service so playback survives
+          the app being backgrounded — which is also what keeps the peer link
+          alive while playing, and why `onBackgrounded(isPlaying = true)` leaves
+          it open. The typed permission above and this type must agree, or
+          Android 14+ refuses to start it.
+        -->
+        <!--
+          exported="true" with no permission is what Media3 requires and what
+          every media app ships: it is how the system's media controls, the
+          assistant, Wear and Android Auto bind to the session. Guarding it with
+          a permission would cut those off. The session itself decides what a
+          controller may do, so binding is not the trust boundary.
+        -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

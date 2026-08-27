@@ -128,11 +128,25 @@ class EpisodeRow(QWidget):
                 pass
 
 
+def resolved_drop_index(here: int, target: int, count: int) -> int:
+    """Final index of a row dragged from `here` to insertion point `target`.
+
+    `target` is an insertion point in the list as displayed (0..count), while
+    QueueManager.move() inserts into the list with the dragged row already
+    taken out. Dragging downwards therefore loses one place to that removal,
+    and dragging upwards does not — the off-by-one that makes a drag look
+    correct in one direction and land one short in the other.
+    """
+    index = target - 1 if here < target else target
+    return max(0, min(index, count - 1))
+
+
 class EpisodeListWidget(QListWidget):
     playRequested = Signal(int)
     queueToggled = Signal(int)
     markPlayedRequested = Signal(int)
     markUnplayedRequested = Signal(int)
+    reordered = Signal(int, int)  # episode_id, new_index — only when reorderable
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -147,6 +161,82 @@ class EpisodeListWidget(QListWidget):
         self._rendered = 0
         self._pinfo: dict = {}
         self._queued: set[int] = set()
+        self._reorderable = False
+
+    # ------------------------------------------------------------- reordering
+
+    def set_reorderable(self, enabled: bool) -> None:
+        """Allow dragging rows to reorder them. Off by default.
+
+        Only meaningful for a list whose order is the user's to choose — the
+        queue. Inbox and Continue Listening are orderings the app derives, so
+        dragging a row there would promise something the next reload undoes.
+        """
+        self._reorderable = enabled
+        if enabled:
+            self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+            self.setDefaultDropAction(Qt.DropAction.MoveAction)
+            # startDrag() builds its payload out of the selection, so a list
+            # that cannot select anything can never begin a drag.
+            self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        else:
+            self.setDragDropMode(QListWidget.DragDropMode.NoDragDrop)
+            self.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+
+    def _episode_rows(self) -> list[int]:
+        """Row numbers holding an episode — everything but the "Show more" row."""
+        return [i for i in range(self.count()) if self.item(i).data(32) != "more"]
+
+    def _episode_id_at(self, row: int) -> int | None:
+        item = self.item(row)
+        if item is None or item.data(32) == "more":
+            return None
+        return getattr(self.itemWidget(item), "episode_id", None)
+
+    def _drop_position(self, event) -> int:
+        """Where the drop lands, counted in episodes, as an insertion point."""
+        rows = self._episode_rows()
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            return len(rows)
+        row = self.row(item)
+        if row not in rows:  # dropped onto "Show more"
+            return len(rows)
+        at = rows.index(row)
+        below = (
+            self.dropIndicatorPosition()
+            == QListWidget.DropIndicatorPosition.BelowItem
+        )
+        return at + 1 if below else at
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Report the move; never perform it.
+
+        Rows are widgets installed with setItemWidget, and Qt's InternalMove
+        takes the item out and puts it back *without* its widget — the row
+        would come back blank. Nothing here writes to the queue either: the
+        daemon owns queue writes, and the reload that follows queueChanged
+        redraws this list from the order that actually won.
+        """
+        if not self._reorderable:
+            return super().dropEvent(event)
+
+        rows = self._episode_rows()
+        source = self.currentRow()
+        episode_id = self._episode_id_at(source)
+        target = self._drop_position(event)
+
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+
+        if episode_id is None or source not in rows:
+            return
+        here = rows.index(source)
+        # Same index the queue page reports, which is what makes a drag here
+        # and a drag there mean the same thing.
+        new_index = resolved_drop_index(here, target, len(rows))
+        if new_index != here:
+            self.reordered.emit(episode_id, new_index)
 
     def _context_menu(self, pos) -> None:
         item = self.itemAt(pos)

@@ -126,9 +126,13 @@ def _build_settings(conn) -> list[dict[str, Any]]:
 def _build_positions(conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT e.guid, e.media_url, e.position_secs, e.total_secs, "
-        "e.position_updated_at, p.feed_url FROM episodes e "
+        "e.position_updated_at, e.state, p.feed_url FROM episodes e "
         "JOIN podcasts p ON p.id = e.podcast_id "
-        "WHERE e.position_secs > 0 AND e.position_updated_at > 0 "
+        # `state='played'` with no position is a real thing — an episode marked
+        # played without listening — and it has to replicate too, or a peer that
+        # has never seen it queues it as new.
+        "WHERE (e.position_secs > 0 OR e.state = 'played') "
+        "AND e.position_updated_at > 0 "
         "ORDER BY e.position_updated_at DESC LIMIT ?",
         (POSITION_LIMIT,),
     )
@@ -140,6 +144,11 @@ def _build_positions(conn) -> list[dict[str, Any]]:
             "position": r["position_secs"],
             "total": r["total_secs"],
             "updated_at": r["position_updated_at"],
+            # A position cannot say "done". An episode abandoned twenty minutes
+            # into an hour and then marked played is indistinguishable from one
+            # still in progress, so a peer that only sees the number puts it
+            # back in its queue.
+            "finished": r["state"] == "played",
         }
         for r in rows
     ]
@@ -161,6 +170,7 @@ def position_message(episode: Episode) -> dict[str, Any] | None:
             "position": episode.position_secs,
             "total": episode.total_secs,
             "updated_at": episode.position_updated_at or int(time.time()),
+            "finished": episode.state == "played",
         },
     }
 
@@ -256,12 +266,20 @@ def _apply_position(conn, record: dict[str, Any], episode: Episode) -> int:
         return 0
     position = int(record.get("position") or 0)
     total = int(record.get("total") or 0)
-    if position <= 0:
+    finished = bool(record.get("finished"))
+    if position <= 0 and not finished:
         return 0
-    # Episode *state* is left alone on purpose: gpodder.net already carries
-    # played/new between devices, and this path must not race it. A position
-    # at the end of the file is enough for reconcile() to drop the episode
-    # from the queue on its own.
+    # A sender that says it is done is believed, because a position cannot say
+    # it. Only True is acted on: a peer that predates the field omits it, and
+    # reading that absence as "unplayed" would wipe played state across the mesh.
+    if finished and episode.state != "played":
+        conn.execute("UPDATE episodes SET state='played' WHERE id=?", (episode.id,))
+    if position <= 0:
+        # Finished with nothing to resume from: the state was the whole message.
+        conn.execute(
+            "UPDATE episodes SET position_updated_at=? WHERE id=?", (remote_at, episode.id)
+        )
+        return 1
     if total > 0:
         conn.execute(
             "UPDATE episodes SET position_secs=?, total_secs=?, position_updated_at=? "

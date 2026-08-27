@@ -77,7 +77,7 @@ interface a normal `10.0.0.2/24` is therefore discovered automatically.
 
 If your WireGuard config assigns a bare `/32` there is no subnet to probe: add
 the peer's tunnel address by hand in Settings → Device sync. The address to
-type is shown on the other machine in the same panel. Allow TCP port `47741`
+type is shown on the other machine in the same panel. Allow TCP port `47722`
 between the peers.
 
 ### What's on the wire

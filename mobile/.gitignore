@@ -1,0 +1,13 @@
+local.properties
+.gradle/
+build/
+.kotlin/
+*.iml
+.idea/
+captures/
+
+# Release signing. The keystore is what lets a later build replace an installed
+# one — Android refuses an update signed by a different key — so it must be kept
+# and must not be committed.
+release.keystore
+keystore.properties

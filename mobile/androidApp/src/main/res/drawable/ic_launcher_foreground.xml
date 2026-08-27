@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The desktop's icon, `data/icons/aerialpod.png`, used as-is.
+
+  Inset by 18dp so the artwork occupies the inner 72dp of the 108dp canvas.
+  That 72dp square is the part a launcher's mask actually shows — the remaining
+  18dp on each side exists for parallax and cropping — so a full-bleed bitmap
+  here has its edges cut off. At 72dp the whole disc is visible and the yellow
+  mark, which spans about 69% of the artwork, lands well inside the 66dp region
+  that is guaranteed never to be clipped.
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_launcher_art"
+    android:inset="18dp" />

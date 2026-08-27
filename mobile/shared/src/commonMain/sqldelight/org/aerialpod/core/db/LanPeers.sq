@@ -1,0 +1,45 @@
+-- Peer bookkeeping.
+--
+-- The mobile peer dials out only (see docs/mobile-lan-sync.md), so these rows
+-- are the entire discovery mechanism: there is no subnet sweep to fall back on,
+-- and no listening socket for anyone to find us at.
+
+-- Peers we have successfully authenticated with at least once. Keyed by the
+-- peer's LAN device id, which we only learn *after* the handshake.
+CREATE TABLE lan_peers (
+  device_id TEXT PRIMARY KEY,
+  caption TEXT,
+  address TEXT,
+  port INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL DEFAULT 0
+);
+
+-- Addresses the user pinned by hand. Separate table because a manual entry
+-- exists before any device id is known — this is the escape hatch for
+-- WireGuard /32 setups where there is no subnet to sweep.
+CREATE TABLE lan_manual_peers (
+  address TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  PRIMARY KEY (address, port)
+);
+
+knownPeers:
+SELECT * FROM lan_peers ORDER BY last_seen DESC;
+
+rememberPeer:
+INSERT INTO lan_peers(device_id, caption, address, port, last_seen) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(device_id) DO UPDATE SET
+  caption = excluded.caption, address = excluded.address,
+  port = excluded.port, last_seen = excluded.last_seen;
+
+forgetPeer:
+DELETE FROM lan_peers WHERE device_id = ?;
+
+manualPeers:
+SELECT address, port FROM lan_manual_peers ORDER BY address;
+
+addManualPeer:
+INSERT OR IGNORE INTO lan_manual_peers(address, port) VALUES (?, ?);
+
+removeManualPeer:
+DELETE FROM lan_manual_peers WHERE address = ? AND port = ?;

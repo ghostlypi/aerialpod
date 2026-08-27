@@ -27,7 +27,7 @@ from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PORT = 47741
+DEFAULT_PORT = 47722
 MAX_SUBNET_HOSTS = 1024   # /22 and smaller; anything larger isn't ours to scan
 CONNECT_TIMEOUT = 0.4
 SWEEP_WORKERS = 64

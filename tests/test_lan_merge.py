@@ -238,9 +238,20 @@ def test_older_position_ignored(devices):
     assert repo.episode_by_id(1).position_secs == 1800
 
 
-def test_merge_leaves_episode_state_to_gpodder(devices):
-    """Positions sync over the LAN; played/new does not, so the two paths
-    can't race each other."""
+def test_merge_replicates_played(devices):
+    """A finished episode carries its state, not just its position.
+
+    This used to leave played/new to gpodder.net alone, on the reasoning that
+    two paths writing one field would race. The cost turned out to be worse
+    than the race: a peer that has never seen an episode cannot tell "finished"
+    from "not started", so it queues everything the other device has already
+    listened to. On a fresh phone that is the whole back catalogue, and no
+    amount of syncing clears it, because there is nothing left to send.
+
+    Only `finished=True` is acted on — see PositionRecord.finished — so this
+    can mark an episode played but never un-mark one, and a peer too old to
+    send the flag simply omits it.
+    """
     devices.use("b")
     repo.update_episode(1, state="new")
     devices.use("a")
@@ -249,8 +260,23 @@ def test_merge_leaves_episode_state_to_gpodder(devices):
 
     devices.merge_into("b", devices.snapshot_of("a"))
     episode = repo.episode_by_id(1)
-    assert episode.state == "new"          # untouched
-    assert episode.position_secs == 3590   # but the position landed
+    assert episode.state == "played"
+    assert episode.position_secs == 3590
+
+
+def test_merge_never_unmarks_played(devices):
+    """The flag is one-way: an unfinished record must not undo a played one."""
+    devices.use("b")
+    repo.update_episode(1, state="played", position_secs=1200, total_secs=3600,
+                        position_updated_at=1000)
+    devices.use("a")
+    repo.update_episode(1, state="new", position_secs=1800, total_secs=3600,
+                        position_updated_at=2000)
+
+    devices.merge_into("b", devices.snapshot_of("a"))
+    episode = repo.episode_by_id(1)
+    assert episode.state == "played", "a newer unfinished record must not un-mark"
+    assert episode.position_secs == 1800, "the position is still the newer one"
 
 
 def test_live_position_push_applies(devices):

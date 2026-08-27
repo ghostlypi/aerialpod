@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A platform theme, not an AppCompat one: the UI is entirely Compose, so
+      pulling in AppCompat would add a dependency whose only job is to host a
+      ComposeView. Everything below the Compose layer is the launch window.
+    -->
+    <style name="Theme.AerialPod" parent="android:Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

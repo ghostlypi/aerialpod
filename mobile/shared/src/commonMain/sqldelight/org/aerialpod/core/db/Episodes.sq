@@ -1,0 +1,153 @@
+-- Episodes, plus the URL aliases that make gpodder action matching survive
+-- ad-injecting CDNs rewriting enclosure URLs per listener.
+
+CREATE TABLE episodes (
+  id INTEGER PRIMARY KEY,
+  podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+  guid TEXT,
+  media_url TEXT NOT NULL,
+  title TEXT,
+  description TEXT,
+  pub_date INTEGER,
+  duration_secs INTEGER,
+  mime TEXT,
+  file_size INTEGER,
+  image_url TEXT,
+  state TEXT NOT NULL DEFAULT 'new',  -- 'new'|'inbox'|'played'|'archived'
+  position_secs INTEGER NOT NULL DEFAULT 0,
+  total_secs INTEGER NOT NULL DEFAULT 0,
+  position_updated_at INTEGER NOT NULL DEFAULT 0,  -- action timestamp, UTC epoch
+  downloaded_path TEXT,
+  download_state TEXT NOT NULL DEFAULT 'none',  -- 'none'|'downloading'|'done'
+  keep_download INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(podcast_id, guid)
+);
+CREATE INDEX idx_episodes_media_url ON episodes(media_url);
+CREATE INDEX idx_episodes_podcast ON episodes(podcast_id, pub_date);
+
+CREATE TABLE episode_url_aliases (
+  episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+  url TEXT NOT NULL PRIMARY KEY
+);
+
+episodeById:
+SELECT * FROM episodes WHERE id = ?;
+
+episodesForPodcast:
+SELECT * FROM episodes WHERE podcast_id = ? ORDER BY pub_date DESC LIMIT ?;
+
+allEpisodesForPodcast:
+SELECT * FROM episodes WHERE podcast_id = ?;
+
+episodeByGuid:
+SELECT * FROM episodes WHERE podcast_id = ? AND guid = ?;
+
+episodeByMediaUrl:
+SELECT * FROM episodes WHERE podcast_id = ? AND media_url = ?;
+
+episodeByAlias:
+SELECT e.* FROM episode_url_aliases a JOIN episodes e ON e.id = a.episode_id
+WHERE a.url = ? AND e.podcast_id = ?;
+
+inProgressEpisodes:
+SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+WHERE p.subscribed = 1 AND e.state != 'played' AND e.position_secs > 0
+ORDER BY e.position_updated_at DESC LIMIT ?;
+
+inboxEpisodes:
+SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+WHERE p.subscribed = 1 AND e.state IN ('new', 'inbox')
+ORDER BY e.pub_date DESC LIMIT ?;
+
+-- In-progress episodes qualify regardless of state (a phone-started
+-- back-catalog episode is locally 'archived'); untouched ones only via
+-- 'new'/'inbox'.
+queueCandidates:
+SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+WHERE p.subscribed = 1 AND e.state != 'played'
+  AND (e.position_secs > 0 OR e.state IN ('new', 'inbox'));
+
+insertEpisode:
+INSERT OR IGNORE INTO episodes(podcast_id, guid, media_url, title, description,
+  pub_date, duration_secs, mime, file_size, image_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+setEpisodeState:
+UPDATE episodes SET state = ? WHERE id = ?;
+
+setEpisodePosition:
+UPDATE episodes SET position_secs = ?, total_secs = ?, position_updated_at = ? WHERE id = ?;
+
+-- The total is left alone when a peer reports 0: AntennaPod sometimes sends a
+-- bogus duration, and overwriting a known-good total with it would make
+-- isFinished() stop firing.
+setEpisodePositionOnly:
+UPDATE episodes SET position_secs = ?, position_updated_at = ? WHERE id = ?;
+
+-- A gpodder 'play' action can carry a duration for an episode we have no
+-- position for. The total is worth keeping on its own: it is what makes
+-- isFinished() able to answer at all.
+setEpisodeTotal:
+UPDATE episodes SET total_secs = ? WHERE id = ?;
+
+-- A gpodder 'new' action: another device reset the episode.
+resetEpisodeToNew:
+UPDATE episodes SET state = 'new', position_secs = 0, position_updated_at = ? WHERE id = ?;
+
+-- Everything the download policy might have to evict. 'downloading' is
+-- included because a transfer interrupted by the process dying leaves a row
+-- claiming it is in flight when nothing is carrying it.
+downloadedEpisodes:
+SELECT * FROM episodes WHERE download_state IN ('done', 'downloading');
+
+setKeepDownload:
+UPDATE episodes SET keep_download = ? WHERE id = ?;
+
+setDownloadState:
+UPDATE episodes SET downloaded_path = ?, download_state = ? WHERE id = ?;
+
+markUnplayed:
+UPDATE episodes SET state = 'inbox', position_secs = 0, position_updated_at = ? WHERE id = ?;
+
+-- Refresh a known episode from the feed. COALESCE so a feed that stopped
+-- publishing a duration (or an image, or a size) does not erase what an earlier
+-- fetch already learned — the desktop's UPDATE has the same shape.
+updateEpisodeFromFeed:
+UPDATE episodes SET
+  media_url = :mediaUrl, title = :title, description = :description, pub_date = :pubDate,
+  duration_secs = COALESCE(:durationSecs, duration_secs),
+  mime = COALESCE(:mime, mime),
+  file_size = COALESCE(:fileSize, file_size),
+  image_url = COALESCE(:imageUrl, image_url)
+WHERE id = :id;
+
+-- A brand-new subscription's back catalogue lands 'archived' so it does not
+-- flood the queue; this surfaces the single most recent episode so the
+-- subscription shows something.
+markLatestArchivedAsNew:
+UPDATE episodes SET state = 'new' WHERE id = (
+  SELECT id FROM episodes WHERE podcast_id = ? AND state = 'archived'
+  ORDER BY pub_date DESC LIMIT 1
+);
+
+insertEpisodeWithState:
+INSERT OR IGNORE INTO episodes(podcast_id, guid, media_url, title, description,
+  pub_date, duration_secs, mime, file_size, image_url, state)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+addAlias:
+INSERT OR IGNORE INTO episode_url_aliases(episode_id, url) VALUES (?, ?);
+
+-- A feed can hand out a different enclosure URL for an episode it already
+-- published — routinely, when a show changes hosting or ad platform.
+updateMediaUrl:
+UPDATE episodes SET media_url = ? WHERE id = ?;
+
+-- Every in-progress episode a snapshot carries, newest touch first. Bounded
+-- because this is the one section that would otherwise grow with the library
+-- rather than with what one person can actually listen to.
+positionsForSnapshot:
+SELECT e.guid, e.media_url, e.position_secs, e.total_secs, e.position_updated_at, e.state, p.feed_url
+FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+WHERE (e.position_secs > 0 OR e.state = 'played') AND e.position_updated_at > 0
+ORDER BY e.position_updated_at DESC LIMIT ?;
