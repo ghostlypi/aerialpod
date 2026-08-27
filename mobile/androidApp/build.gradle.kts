@@ -1,18 +1,39 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
 }
+
+// Read once, at configuration time. Missing or malformed is a hard failure:
+// silently defaulting would ship a build whose version is not the one the
+// repository says it is.
+val versionProps = Properties().apply {
+    val file = rootProject.file("version.properties")
+    require(file.exists()) { "version.properties is missing from ${rootProject.projectDir}" }
+    file.inputStream().use { load(it) }
+}
+val appVersionCode = requireNotNull(versionProps.getProperty("versionCode")) {
+    "version.properties has no versionCode"
+}.trim().toInt()
+val appVersionName = requireNotNull(versionProps.getProperty("versionName")) {
+    "version.properties has no versionName"
+}.trim()
 
 android {
     namespace = "org.aerialpod.android"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "org.aerialpod.android"
+        // The identity Google Play knows the app by. Permanent once published,
+        // and independent of `namespace` above — which stays org.aerialpod.*
+        // so the Kotlin packages, and the ProGuard rules that match them, do
+        // not have to move.
+        applicationId = "com.parthiyer.aerialpod"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildFeatures {

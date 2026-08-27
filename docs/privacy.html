@@ -162,8 +162,22 @@ discovered, adopted, or trusted automatically.</p>
 <td>Notifications</td>
 <td>Show the playback controls</td>
 </tr>
+<tr>
+<td>Wake lock</td>
+<td>Finish a download or keep audio playing while the screen is off</td>
+</tr>
+<tr>
+<td>Run at startup</td>
+<td>Re-register the periodic feed refresh after the device restarts. Nothing runs at boot beyond that scheduling</td>
+</tr>
 </tbody>
 </table>
+<p>The last two are added by the Android libraries that handle background work and
+playback, rather than being requested directly by AerialPod. The app also
+declares one internal, signature-level permission
+(<code>DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION</code>) that comes from a standard Android
+library; only AerialPod itself can hold it, and it grants no access to
+anything on your device.</p>
 <p>Android may describe local network access in terms of finding "nearby devices".
 AerialPod uses it only to open a connection to an address you typed in yourself.</p>
 <h2>Your controls</h2>
@@ -183,7 +197,7 @@ including children.</p>
 address, with a new effective date. Material changes affecting what leaves your
 device will be noted in the app's release notes.</p>
 <h2>Contact</h2>
-<p>FILL-IN-CONTACT</p>
+<p>Parth "ghostlypi" Iyer: parth.iyer@gmail.com</p>
 <hr />
 <p><em>AerialPod is open source. If you would rather verify than take this on trust,
 the network behaviour described above is in <code>lan/</code>, <code>gpodder/</code>, and <code>feeds/</code> in

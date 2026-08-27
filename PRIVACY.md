@@ -119,6 +119,15 @@ When on:
 | Local network access | Connect to *your own* device on your LAN for direct sync. Used for nothing else — no scanning for other devices, no location |
 | Foreground service (media playback) | Keep playing when the app is not in front |
 | Notifications | Show the playback controls |
+| Wake lock | Finish a download or keep audio playing while the screen is off |
+| Run at startup | Re-register the periodic feed refresh after the device restarts. Nothing runs at boot beyond that scheduling |
+
+The last two are added by the Android libraries that handle background work and
+playback, rather than being requested directly by AerialPod. The app also
+declares one internal, signature-level permission
+(`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`) that comes from a standard Android
+library; only AerialPod itself can hold it, and it grants no access to
+anything on your device.
 
 Android may describe local network access in terms of finding "nearby devices".
 AerialPod uses it only to open a connection to an address you typed in yourself.
@@ -145,7 +154,7 @@ device will be noted in the app's release notes.
 
 ## Contact
 
-FILL-IN-CONTACT
+Parth "ghostlypi" Iyer: parth.iyer@gmail.com
 
 ---
 
