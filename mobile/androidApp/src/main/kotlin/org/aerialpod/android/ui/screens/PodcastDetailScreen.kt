@@ -1,5 +1,6 @@
 package org.aerialpod.android.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,7 +39,7 @@ import org.aerialpod.android.AppGraph
 import org.aerialpod.android.ui.components.Cover
 import org.aerialpod.android.ui.components.EmptyHint
 import org.aerialpod.android.ui.components.EpisodeRow
-import org.aerialpod.android.ui.components.plainText
+import org.aerialpod.android.ui.components.rememberRichText
 import org.aerialpod.core.db.PodcastSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,17 +97,6 @@ fun PodcastDetailScreen(
                     Cover(info[podcastId]?.imageUrl, size = 96.dp, corner = 12.dp)
                     Column(modifier = Modifier.weight(1f)) {
                         Text(title, style = MaterialTheme.typography.titleMedium)
-                        val blurb = plainText(podcast?.description)
-                        if (blurb.isNotEmpty()) {
-                            Text(
-                                blurb,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 4,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -117,6 +108,8 @@ fun PodcastDetailScreen(
                     }
                 }
             }
+
+            item { PodcastAbout(podcast?.description, podcast?.website, podcast?.feed_url) }
 
             if (rows.isEmpty()) {
                 item { EmptyHint("No episodes yet — pull the feed with the refresh button.") }
@@ -160,6 +153,50 @@ fun PodcastDetailScreen(
                 TextButton(onClick = { confirmUnsubscribe = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * The feed's description — collapsed to a few lines until tapped — and its
+ * links: the show's website and the feed itself.
+ */
+@Composable
+private fun PodcastAbout(description: String?, website: String?, feedUrl: String?) {
+    val about = rememberRichText(description)
+    var expanded by remember { mutableStateOf(false) }
+    var overflows by remember { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
+    val links = listOfNotNull(
+        website?.takeIf { it.startsWith("http") }?.let { "Website" to it },
+        feedUrl?.takeIf { it.startsWith("http") }?.let { "RSS feed" to it },
+    )
+    if (about.isEmpty() && links.isEmpty()) return
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+        if (about.isNotEmpty()) {
+            Text(
+                about,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) Int.MAX_VALUE else 4,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
+                modifier = Modifier.clickable(enabled = overflows || expanded) { expanded = !expanded },
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (overflows || expanded) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Show less" else "Show more")
+                }
+            }
+            links.forEach { (label, url) ->
+                TextButton(onClick = { runCatching { uriHandler.openUri(url) } }) { Text(label) }
+            }
+        }
     }
 }
 

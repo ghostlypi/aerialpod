@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares AerialPod to Android Auto as a media app. Auto then binds to
+     PlaybackService and draws its own UI from the browse tree. -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

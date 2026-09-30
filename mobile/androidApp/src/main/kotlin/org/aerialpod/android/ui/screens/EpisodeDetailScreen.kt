@@ -35,7 +35,7 @@ import org.aerialpod.android.ui.components.Cover
 import org.aerialpod.android.ui.components.formatDate
 import org.aerialpod.android.ui.components.formatDuration
 import org.aerialpod.android.ui.components.formatRemaining
-import org.aerialpod.android.ui.components.plainText
+import org.aerialpod.android.ui.components.rememberRichText
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -168,7 +168,7 @@ fun EpisodeDetailScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            val notes = plainText(ep.description)
+            val notes = rememberRichText(ep.description)
             if (notes.isNotEmpty()) {
                 Text("Show notes", style = MaterialTheme.typography.titleSmall)
                 Text(notes, style = MaterialTheme.typography.bodyMedium)

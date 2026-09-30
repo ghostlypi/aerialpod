@@ -4,8 +4,8 @@ import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import org.aerialpod.android.appGraph
 
 /**
@@ -21,10 +21,14 @@ import org.aerialpod.android.appGraph
  * The service owns the player; [PlaybackCoordinator] owns everything that has
  * to happen *around* it — per-podcast speed, skip intro and outro, position
  * writes, auto-advance and the sleep timer.
+ *
+ * A library service rather than a plain session service so Android Auto can
+ * browse it: [LibraryCallback] serves the tree and turns a pick into playback.
  */
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
 
-    private var session: MediaSession? = null
+    private var session: MediaLibrarySession? = null
+    private var library: LibraryCallback? = null
     private var coordinator: PlaybackCoordinator? = null
 
     override fun onCreate() {
@@ -45,7 +49,10 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
 
-        session = MediaSession.Builder(this, player).build()
+        val callback = LibraryCallback(graph.core).also { library = it }
+        session = MediaLibrarySession.Builder(this, player, callback)
+            .setMediaButtonPreferences(callback.mediaButtons)
+            .build()
         coordinator = PlaybackCoordinator(
             player = player,
             core = graph.core,
@@ -54,7 +61,8 @@ class PlaybackService : MediaSessionService() {
         ).also { it.attach() }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
+        session
 
     /**
      * Stop when the user swipes the app away and nothing is playing.
@@ -77,6 +85,8 @@ class PlaybackService : MediaSessionService() {
             release()
         }
         session = null
+        library?.release()
+        library = null
         super.onDestroy()
     }
 }

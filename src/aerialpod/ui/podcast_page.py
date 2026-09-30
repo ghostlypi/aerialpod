@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from ..db import repo
 from . import images
 from .episode_list import EpisodeListWidget
+from .notes_dialog import NotesDialog
 
 COVER = 120
 
@@ -41,6 +42,10 @@ class PodcastPage(QWidget):
         back.clicked.connect(self.backRequested)
         top.addWidget(back)
         top.addStretch(1)
+        self.about_btn = QPushButton("About…")
+        self.about_btn.setToolTip("Full description and links")
+        self.about_btn.clicked.connect(self._show_about)
+        top.addWidget(self.about_btn)
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(
             lambda: self.podcast_id and self.refreshRequested.emit(self.podcast_id)
@@ -75,6 +80,7 @@ class PodcastPage(QWidget):
         self.desc.setWordWrap(True)
         self.desc.setTextFormat(Qt.TextFormat.RichText)
         self.desc.setMaximumHeight(80)
+        self.desc.setOpenExternalLinks(True)
         info.addWidget(self.desc)
         info.addStretch(1)
         header.addLayout(info, 1)
@@ -110,6 +116,16 @@ class PodcastPage(QWidget):
         pm = images.loader().get(p.image_url, COVER)
         self.cover.setPixmap(pm if pm is not None else QPixmap())
         self.episodes.set_episodes(repo.episodes_for_podcast(p.id))
+
+    def _show_about(self) -> None:
+        p = self.podcast_id and repo.podcast_by_id(self.podcast_id)
+        if not p:
+            return
+        NotesDialog(
+            repo.display_title(p), p.description,
+            links=[("Website", p.website or ""), ("RSS feed", p.feed_url)],
+            parent=self,
+        ).exec()
 
     def _on_cover_loaded(self, url: str, pm: QPixmap) -> None:
         if url == self._cover_url:

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..db import repo
 from ..db.models import Episode
 from . import images
+from .notes_dialog import NotesDialog
 
 PAGE_SIZE = 50
 
@@ -156,6 +157,8 @@ class EpisodeListWidget(QListWidget):
         self.setUniformItemSizes(False)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
+        # Clicking a row (anywhere but its buttons) opens its show notes.
+        self.itemClicked.connect(self._on_item_clicked)
         self._episodes: list[Episode] = []
         self._show_podcast = False
         self._rendered = 0
@@ -251,6 +254,8 @@ class EpisodeListWidget(QListWidget):
 
         menu = QMenu(self)
         menu.addAction("Play", lambda: self.playRequested.emit(eid))
+        if ep is not None:
+            menu.addAction("Show notes…", lambda: self.show_notes(ep))
         menu.addAction("Remove from queue" if in_queue else "Add to queue",
                        lambda: self.queueToggled.emit(eid))
         menu.addSeparator()
@@ -262,6 +267,23 @@ class EpisodeListWidget(QListWidget):
                 menu.addAction("Mark unplayed (reset progress)",
                                lambda: self.markUnplayedRequested.emit(eid))
         menu.exec(self.mapToGlobal(pos))
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        if item.data(32) == "more":
+            return
+        eid = getattr(self.itemWidget(item), "episode_id", None)
+        ep = next((e for e in self._episodes if e.id == eid), None)
+        if ep is not None:
+            self.show_notes(ep)
+
+    def show_notes(self, ep: Episode) -> None:
+        title, _image = self._pinfo.get(ep.podcast_id, (None, None))
+        meta = [title, fmt_date(ep.pub_date), fmt_duration(ep.duration_secs or ep.total_secs)]
+        NotesDialog(
+            ep.title or "(untitled)", ep.description,
+            subtitle="  ·  ".join(b for b in meta if b),
+            parent=self,
+        ).exec()
 
     def set_episodes(self, episodes: list[Episode], show_podcast: bool = False) -> None:
         self.clear()

@@ -80,6 +80,10 @@
           assistant, Wear and Android Auto bind to the session. Guarding it with
           a permission would cut those off. The session itself decides what a
           controller may do, so binding is not the trust boundary.
+
+          Both actions: Media3 clients bind with the first, while Android Auto
+          and system media resumption still look for the legacy
+          MediaBrowserService one.
         -->
         <service
             android:name=".playback.PlaybackService"
@@ -87,8 +91,14 @@
             android:foregroundServiceType="mediaPlayback"
             tools:ignore="ExportedService">
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Android Auto: marks this as a media app and points at the service. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
     </application>
 </manifest>
