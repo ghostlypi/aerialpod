@@ -15,7 +15,8 @@ Everything goes through DaemonClient, which has two interchangeable backends:
   InProcessBackend  constructs the services in this process and calls them
                     directly. This is what runs where there is no session bus
                     (macOS), and what runs if the daemon can't be reached.
-  DBusBackend       forwards to the daemon over org.aerialpod.Daemon.
+  DBusBackend       forwards to the daemon over org.aerialpod.Daemon (or
+                    <app-id>.Daemon inside a flatpak).
 
 Every command is one-way. Anything the UI needs an answer to — what's next in
 the queue, the pairing code, whether an episode is queued — it reads for

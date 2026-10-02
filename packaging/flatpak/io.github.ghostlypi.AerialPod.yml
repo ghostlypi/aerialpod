@@ -1,0 +1,61 @@
+# AerialPod as a flatpak — builds natively on x86_64 and aarch64 (Steam Frame,
+# ARM laptops) from this one manifest. See packaging/flatpak/build.sh.
+id: io.github.ghostlypi.AerialPod
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+# PySide6 built against the runtime's Qt, for both architectures — so there is
+# no 300 MB Qt bundled in a wheel, and Qt Multimedia uses the runtime's FFmpeg.
+base: io.qt.PySide.BaseApp
+base-version: '6.11'
+command: aerialpod
+rename-desktop-file: aerialpod.desktop
+rename-icon: aerialpod
+
+finish-args:
+  - --share=ipc
+  - --share=network            # gpodder.net, feeds, and the LAN peer mesh
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio        # Qt Multimedia output
+  - --filesystem=xdg-run/pipewire-0      # Qt's PipeWire device list (runtime switching)
+  - --own-name=org.mpris.MediaPlayer2.aerialpod
+  - --talk-name=org.freedesktop.secrets   # gpodder account + pairing key
+
+build-options:
+  env:
+    # Read by cleanup-BaseApp.sh: the BaseApp sits on QtWebEngine and ships
+    # numpy, and AerialPod uses neither.
+    BASEAPP_REMOVE_WEBENGINE: '1'
+    BASEAPP_DISABLE_NUMPY: '1'
+
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+  # Only needed to build AerialPod's own wheel
+  - pip3 uninstall -y hatchling pathspec pluggy trove-classifiers
+
+modules:
+  - python3-deps.json
+
+  - name: aerialpod
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
+      - install -Dm644 data/aerialpod.desktop ${FLATPAK_DEST}/share/applications/aerialpod.desktop
+      - install -Dm644 data/icons/aerialpod.png ${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/aerialpod.png
+      - install -Dm644 packaging/flatpak/${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      # The window D-Bus-activates the daemon; flatpak exports this so the
+      # session bus can start it outside any window's lifetime.
+      - install -Dm644 packaging/flatpak/${FLATPAK_ID}.Daemon.service ${FLATPAK_DEST}/share/dbus-1/services/${FLATPAK_ID}.Daemon.service
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .venv
+          - build
+          - mobile
+          - .flatpak-builder
+          - packaging/flatpak/build-dir-x86_64
+          - packaging/flatpak/build-dir-aarch64
+          - packaging/flatpak/repo

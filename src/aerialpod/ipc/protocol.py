@@ -13,8 +13,13 @@ into a JSON column anyway.
 from __future__ import annotations
 
 import json
+import os
 
-BUS_NAME = "org.aerialpod.Daemon"
+# Inside a flatpak the sandbox only lets the app own (and D-Bus-activate) names
+# under its own app ID, so there the daemon lives at <app-id>.Daemon instead.
+# Both processes run in the same app, so they agree on this without asking.
+_FLATPAK_ID = os.environ.get("FLATPAK_ID")
+BUS_NAME = f"{_FLATPAK_ID}.Daemon" if _FLATPAK_ID else "org.aerialpod.Daemon"
 OBJECT_PATH = "/org/aerialpod/Daemon"
 INTERFACE = "org.aerialpod.Daemon1"
 

@@ -145,6 +145,30 @@ update; `./install.sh uninstall` removes it.
 `data/icons/aerialpod.png` and re-run `./install.sh` — it takes priority
 over the bundled SVG.
 
+## Install (Flatpak — x86_64 and ARM, e.g. Steam Frame)
+
+```sh
+packaging/flatpak/build.sh --bundle                 # this machine's arch
+packaging/flatpak/build.sh --arch aarch64 --bundle  # ARM, needs qemu-user-static
+flatpak install --user aerialpod-aarch64.flatpak    # on the target device
+```
+
+The **Flatpak** workflow in GitHub Actions builds both bundles natively on
+tag pushes. The bundle pulls the KDE runtime and PySide6 from Flathub when
+installed. Data lives in `~/.var/app/io.github.ghostlypi.AerialPod/`, separate
+from a native install.
+
+Inside the sandbox the daemon is `io.github.ghostlypi.AerialPod.Daemon` (flatpak
+only lets an app own names under its ID). It is D-Bus activated like the native
+one, and asks the Background portal to autostart it with the session in place of
+the systemd unit. On the very first install the session bus may not know about
+the new service until you log out and back in. Until then the window runs sync
+in-process, as with `--no-daemon`.
+
+After changing `pyproject.toml` dependencies, regenerate the per-arch wheel
+list with `packaging/flatpak/gen-python-deps.py` and commit
+`python3-deps.json`.
+
 ## Install (macOS — experimental)
 
 ```sh
@@ -171,4 +195,4 @@ Useful flags: `--dry-run-sync` logs gpodder uploads instead of POSTing them.
 ## Distribution roadmap
 
 - **COPR RPM** (Fedora-native, can use the distro's `python3-pyside6`) — next step when the repo gets a public remote
-- **Flathub** — the long-term channel for non-Fedora Linux users (needs AppStream metainfo + the flatpak manifest)
+- **Flathub** — the long-term channel for non-Fedora Linux users (manifest and metainfo are in `packaging/flatpak/`; submission pending)

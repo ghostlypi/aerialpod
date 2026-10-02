@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ghostlypi.AerialPod</id>
+  <name>AerialPod</name>
+  <summary>Podcast player that syncs with gpodder.net and AntennaPod</summary>
+  <developer id="io.github.ghostlypi">
+    <name>Parth Iyer</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+  <launchable type="desktop-id">io.github.ghostlypi.AerialPod.desktop</launchable>
+  <url type="homepage">https://github.com/ghostlypi/aerialpod</url>
+  <url type="bugtracker">https://github.com/ghostlypi/aerialpod/issues</url>
+  <description>
+    <p>
+      A desktop podcast player that syncs with gpodder.net and plays nicely
+      with AntennaPod on your phone.
+    </p>
+    <ul>
+      <li>Queue derived from synced episode actions, with your own pins and reordering kept</li>
+      <li>Exact playback-position sync both ways</li>
+      <li>Device-to-device sync of queue order and per-podcast settings over a LAN or VPN</li>
+      <li>Only the next queue item is downloaded; everything else streams</li>
+      <li>MPRIS media keys and per-podcast speed and skip settings</li>
+    </ul>
+  </description>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-29"/>
+  </releases>
+</component>

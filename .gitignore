@@ -31,3 +31,9 @@ credentials.json
 *.db
 *.db-wal
 *.db-shm
+
+# --- flatpak builds (packaging/flatpak/build.sh) ---------------------------
+.flatpak-builder/
+packaging/flatpak/build-dir-*/
+packaging/flatpak/repo/
+*.flatpak

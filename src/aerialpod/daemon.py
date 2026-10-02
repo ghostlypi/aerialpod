@@ -2,8 +2,8 @@
 
 Owns the database and every write to it — gpodder.net sync, the LAN peer mesh,
 feed refresh, the queue, downloads. Starts with your session (see the systemd
-unit installed by install.sh) or on demand via D-Bus activation the first time
-the window asks for it.
+unit installed by install.sh, or the Background portal in a flatpak) or on
+demand via D-Bus activation the first time the window asks for it.
 
 Deliberately headless but still a Qt application: the services are QObjects on
 timers and worker threads, so they need an event loop, not a window.
@@ -67,6 +67,10 @@ def main() -> int:
 
     app.aboutToQuit.connect(hub.shutdown)
     QTimer.singleShot(0, hub.start)
+
+    from .portal import request_autostart
+
+    request_autostart([f"{APP_NAME}-daemon"])
 
     log.info("aerialpod-daemon %s ready (schema %d)", VERSION, schema)
     rc = app.exec()
