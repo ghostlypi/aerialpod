@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.FastForward
@@ -46,9 +48,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.flowOf
 import org.aerialpod.android.AppGraph
 import org.aerialpod.android.ui.components.Cover
 import org.aerialpod.android.ui.components.formatDuration
+import org.aerialpod.android.ui.components.rememberRichText
 import org.aerialpod.core.db.Repo
 
 /** The desktop's preset ladder (`repo.DEFAULTS["speed_presets"]`). */
@@ -64,6 +68,9 @@ fun PlayerScreen(graph: AppGraph, onBack: () -> Unit) {
         .collectAsStateWithLifecycle(10L)
     var scrubbing by remember { mutableStateOf<Float?>(null) }
     var showSleep by remember { mutableStateOf(false) }
+    val episode by remember(state.episodeId) {
+        state.episodeId?.let { graph.library.episode(it) } ?: flowOf(null)
+    }.collectAsStateWithLifecycle(null)
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -85,7 +92,11 @@ fun PlayerScreen(graph: AppGraph, onBack: () -> Unit) {
         },
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -187,6 +198,17 @@ fun PlayerScreen(graph: AppGraph, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+
+            val notes = rememberRichText(episode?.description)
+            if (notes.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Show notes", style = MaterialTheme.typography.titleSmall)
+                    Text(notes, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
         }
     }
 
