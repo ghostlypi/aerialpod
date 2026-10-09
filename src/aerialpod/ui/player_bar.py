@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup, QPixmap
+from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QColor, QPainter, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -23,6 +25,38 @@ from . import images
 from .episode_list import fmt_duration
 
 COVER = 48
+AD_NOTICE_MS = 8000
+
+
+class SeekSlider(QSlider):
+    """The seek bar, with detected ads shaded along the groove."""
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self._spans: list = []
+
+    def set_ad_spans(self, spans: list) -> None:
+        self._spans = list(spans)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 — Qt override
+        super().paintEvent(event)
+        if not self._spans or self.maximum() <= 0:
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self
+        )
+        color = QColor(self.palette().highlight().color())
+        color.setAlpha(110)
+        painter = QPainter(self)
+        scale = groove.width() / (self.maximum() * 1000)  # slider runs in seconds
+        for start, end, _ in self._spans:
+            x = groove.left() + round(start * scale)
+            w = max(2, round((end - start) * scale))
+            painter.fillRect(QRect(x, groove.bottom() - 1, w, 3), color)
+        painter.end()
 
 
 def _label_button(btn: QToolButton, icon_names: list[str], text: str) -> None:
@@ -68,7 +102,7 @@ class PlayerBar(QWidget):
         self.pos_label = QLabel("0:00")
         self.pos_label.setObjectName("PlayerTime")
         seek_row.addWidget(self.pos_label)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = SeekSlider()
         self.slider.setObjectName("SeekSlider")
         self.slider.sliderPressed.connect(lambda: setattr(self, "_dragging", True))
         self.slider.sliderReleased.connect(self._on_slider_released)
@@ -78,6 +112,22 @@ class PlayerBar(QWidget):
         seek_row.addWidget(self.total_label)
         mid.addLayout(seek_row)
         lay.addLayout(mid, 1)
+
+        # "Skipped ad · Undo" — shown briefly after an automatic skip.
+        self.ad_notice = QLabel()
+        self.ad_notice.setObjectName("AdNotice")
+        self.ad_undo = QToolButton()
+        self.ad_undo.setObjectName("AdUndoButton")
+        self.ad_undo.setText("Undo")
+        self.ad_undo.setToolTip("Go back and play the ad")
+        self.ad_undo.clicked.connect(self._on_ad_undo)
+        for w in (self.ad_notice, self.ad_undo):
+            w.hide()
+            lay.addWidget(w)
+        self._ad_notice_timer = QTimer(self)
+        self._ad_notice_timer.setSingleShot(True)
+        self._ad_notice_timer.setInterval(AD_NOTICE_MS)
+        self._ad_notice_timer.timeout.connect(self._hide_ad_notice)
 
         self.back_btn = QPushButton()
         self.back_btn.setObjectName("SkipBackButton")
@@ -159,6 +209,8 @@ class PlayerBar(QWidget):
         player.devicesListChanged.connect(self._rebuild_device_menu)
         player.volumeChanged.connect(self._on_player_volume)
         player.deviceChanged.connect(lambda d: self.device_btn.setToolTip(f"Audio output: {d}"))
+        player.adSpansChanged.connect(self._on_ad_spans)
+        player.adSkipped.connect(self._on_ad_skipped)
         images.loader().loaded.connect(self._on_cover_loaded)
 
     def _on_volume_slider(self, value: int) -> None:
@@ -239,6 +291,7 @@ class PlayerBar(QWidget):
     # ------------------------------------------------------------ signals
 
     def _on_episode(self, ep: Episode | None) -> None:
+        self._hide_ad_notice()
         if ep is None:
             self.title.setText("Nothing playing")
             self.cover.setPixmap(QPixmap())
@@ -251,6 +304,31 @@ class PlayerBar(QWidget):
         pm = images.loader().get(self._cover_url, COVER)
         self.cover.setPixmap(pm if pm is not None else QPixmap())
         self._update_skip_labels()
+
+    def _on_ad_spans(self, spans: list) -> None:
+        self.slider.set_ad_spans(spans)
+        if self.player.ads_found_elsewhere():
+            self.slider.setToolTip(
+                "Ads were found in another copy of this episode, a different length "
+                "from this one, so they won't be skipped here."
+            )
+        else:
+            self.slider.setToolTip(f"{len(spans)} ad break(s) will be skipped" if spans else "")
+
+    def _on_ad_skipped(self, start_ms: int, end_ms: int) -> None:
+        self.ad_notice.setText(f"Skipped ad ({fmt_duration((end_ms - start_ms) // 1000)})")
+        self.ad_notice.show()
+        self.ad_undo.show()
+        self._ad_notice_timer.start()
+
+    def _on_ad_undo(self) -> None:
+        self.player.undo_ad_skip()
+        self._hide_ad_notice()
+
+    def _hide_ad_notice(self) -> None:
+        self._ad_notice_timer.stop()
+        self.ad_notice.hide()
+        self.ad_undo.hide()
 
     def _on_cover_loaded(self, url: str, pm: QPixmap) -> None:
         if url == self._cover_url:

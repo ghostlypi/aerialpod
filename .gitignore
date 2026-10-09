@@ -29,6 +29,8 @@ htmlcov/
 #     a stray credentials fallback file must never be committed) ------------
 credentials.json
 *.db
+# …except SQLDelight's shipped-schema snapshots, which verifyMigrations needs
+!mobile/shared/src/commonMain/sqldelight/databases/*.db
 *.db-wal
 *.db-shm
 

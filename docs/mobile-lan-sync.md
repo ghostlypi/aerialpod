@@ -86,6 +86,22 @@ addresses on every path change and let failure be cheap.
 Since the subnet sweep is gone, "a syncable device is detected" simply means a
 remembered address answered the dial and completed the handshake.
 
+## Fetching analysed audio
+
+Ad spans fit the exact file they were found in, and dynamic ad insertion
+gives every download a different one. So the phone's download worker first
+asks the desktop that analysed an episode (the `updated_by` of its
+`ad_segments` row) for that file, on a **second, short-lived connection** —
+an ident with `"purpose": "file"`, then `file_get` → `file_head`,
+`file_chunk`s, `file_end`. It is still dial-out only, and still the paired
+handshake and AES-GCM framing, but kept off the sync link so a hundred
+megabytes in flight never queues a position push behind it. The desktop never
+registers a file link as a peer. See `lan/files.py` and `FileFetch.kt`.
+
+The phone verifies size and SHA-256 before keeping the file, resumes a cut
+transfer from where it stopped, and falls back to the podcast's server when
+the desktop is unreachable or refuses.
+
 ## Snapshot size
 
 Measured on a synthetic 10,000-episode library (50 podcasts, 1,000 in-progress

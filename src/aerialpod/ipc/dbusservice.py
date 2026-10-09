@@ -157,6 +157,18 @@ class _Interface(ServiceInterface):
         self._cmd("lan_discover")
 
     @method()
+    def AdsDetect(self, episode_id: "u"):  # noqa: F821, N802
+        self._cmd("ads_detect", episode_id)
+
+    @method()
+    def AdsClear(self, episode_id: "u"):  # noqa: F821, N802
+        self._cmd("ads_clear", episode_id)
+
+    @method()
+    def AdsRetry(self):  # noqa: N802
+        self._cmd("ads_retry")
+
+    @method()
     def AnnounceState(self):  # noqa: N802
         self._cmd("announce_state")
 
@@ -225,6 +237,14 @@ class _Interface(ServiceInterface):
     @dbus_signal()
     def DownloadFailed(self, episode_id: "u", message: "s") -> "us":  # noqa: F821, N802
         return [episode_id, message]
+
+    @dbus_signal()
+    def AdsStatus(self, message: "s") -> "s":  # noqa: F821, N802
+        return message
+
+    @dbus_signal()
+    def AdsChanged(self, episode_id: "u") -> "u":  # noqa: F821, N802
+        return episode_id
 
 
 class DaemonBus(QObject):
@@ -351,6 +371,12 @@ class DaemonBus(QObject):
 
     def _on_downloadFailed(self, episode_id: int, message: str) -> None:  # noqa: N802
         self._emit("DownloadFailed", int(episode_id), message)
+
+    def _on_adsStatus(self, message: str) -> None:  # noqa: N802
+        self._emit("AdsStatus", message)
+
+    def _on_adsChanged(self, episode_id: int) -> None:  # noqa: N802
+        self._emit("AdsChanged", int(episode_id))
 
 
 def peers_payload(peers: list) -> list[dict[str, str]]:

@@ -4,6 +4,7 @@
 #
 #   ./install.sh            install or update
 #   ./install.sh uninstall  remove everything it installed
+#   ./install.sh ai         add the local AI ad detector (GPU recommended)
 #
 # Works on any Fedora/GNOME machine with python3 >= 3.11. On macOS it
 # installs the venv + launcher only (no .desktop/icon; MPRIS is Linux-only).
@@ -27,7 +28,7 @@ uninstall() {
     rm -f "$UNIT_DIR/$DAEMON.service" "$DBUS_DIR/org.aerialpod.Daemon.service"
     command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null || true
     pipx uninstall "$APP" 2>/dev/null || true
-    rm -rf "$VENV_DIR"
+    rm -rf "$VENV_DIR" "$HOME/.local/opt/$APP-ai"
     rm -f "$BIN_DIR/$APP" "$BIN_DIR/$DAEMON" "$APPS_DIR/$APP.desktop" \
           "$ICON_DIR/$APP.svg" \
           "$HOME/.local/share/icons/hicolor/256x256/apps/$APP.png"
@@ -38,7 +39,63 @@ uninstall() {
 }
 [[ "${1:-}" == "uninstall" ]] && uninstall
 
+# --- optional: the ad detector's toolchain --------------------------------
+# torch, faster-whisper and SemIf are gigabytes, GPU-specific, and SemIf is
+# not on PyPI, so they live in their own venv rather than the app's. The
+# daemon only ever runs ads/pipeline.py under this venv's python; an install
+# without it simply receives ad timestamps from a peer that has one.
+AI_VENV_DIR="$HOME/.local/opt/$APP-ai"
+SEMIF_REF=23cf1f39fc9534fe81437200959b6dfc7106e45a   # TheoLeeCJ/SemIf, pinned
+
+install_ai() {
+    echo "Installing the ad-detection toolchain into $AI_VENV_DIR…"
+    # 3.12: the newest Python that torch 2.10 and llama-cpp-python both ship
+    # for without surprises. uv can fetch it; otherwise use what is here.
+    if command -v uv >/dev/null 2>&1; then
+        uv venv --clear --python 3.12 "$AI_VENV_DIR"
+        PIP=(uv pip install --python "$AI_VENV_DIR/bin/python")
+        REBUILD=(--reinstall --no-cache)
+    else
+        python3 -m venv --clear "$AI_VENV_DIR"
+        "$AI_VENV_DIR/bin/pip" install --quiet --upgrade pip
+        PIP=("$AI_VENV_DIR/bin/pip" install)
+        REBUILD=(--force-reinstall --no-cache-dir --no-deps)
+    fi
+    # bitsandbytes loads the Qwen3.5 scan models in 8/4-bit on the GPU; the
+    # llamacpp extra runs GGUF models — the 27B checker, and the CPU fallback.
+    "${PIP[@]}" \
+        "semif-phase1[llamacpp] @ git+https://github.com/TheoLeeCJ/SemIf@$SEMIF_REF" \
+        "bitsandbytes>=0.46" \
+        "faster-whisper>=1.1" \
+        "av<17"   # faster-whisper 1.2 passes metadata_errors=; PyAV 19 rejects it, 16 works
+
+    # The PyPI llama-cpp-python is CPU-only, and the 27B checker then takes
+    # most of a minute per line. Rebuilt with CUDA it runs those batches on the
+    # GPU even for layers left in RAM. Needs the CUDA toolkit (nvcc); without
+    # it the CPU build stays, and still works, slowly.
+    NVCC=$(command -v nvcc || echo /usr/local/cuda/bin/nvcc)
+    if [[ -x $NVCC ]]; then
+        echo "Rebuilding llama-cpp-python with CUDA (several minutes)…"
+        LLAMA=$("$AI_VENV_DIR/bin/python" -c 'import llama_cpp; print(llama_cpp.__version__)')
+        CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=native" CUDACXX="$NVCC" \
+            "${PIP[@]}" "${REBUILD[@]}" "llama-cpp-python==$LLAMA" \
+            || echo "note: CUDA build failed; keeping the CPU build" >&2
+        # The rebuild re-resolves numpy, and SemIf pins it.
+        "${PIP[@]}" "numpy==2.2.6"
+    fi
+    echo "Done. Restart the daemon to pick it up:"
+    echo "  systemctl --user restart $DAEMON"
+    exit 0
+}
+[[ "${1:-}" == "ai" ]] && install_ai
+
 # --- app install: pipx if available, else a dedicated venv ---------------
+# Stop the daemon first: rebuilding the venv under a running one pulls its own
+# files out from under it — ads/pipeline.py vanishing mid-detection, say.
+# It is restarted below.
+if [[ "$(uname)" == "Linux" ]] && command -v systemctl >/dev/null; then
+    systemctl --user stop "$DAEMON.service" 2>/dev/null || true
+fi
 if command -v pipx >/dev/null 2>&1; then
     echo "Installing with pipx…"
     pipx install --force .

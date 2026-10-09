@@ -19,6 +19,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from ..ads.detector import AdDetector
 from ..core.downloads import DownloadManager
 from ..core.queue import QueueManager
 from ..db import repo
@@ -57,6 +58,9 @@ COMMANDS = (
     "lan_add_peer",
     "lan_remove_peer",
     "lan_discover",
+    "ads_detect",
+    "ads_clear",
+    "ads_retry",
     "announce_state",
 )
 
@@ -80,6 +84,8 @@ class ServiceHub(QObject):
     downloadStarted = Signal(int)
     downloadFinished = Signal(int)
     downloadFailed = Signal(int, str)
+    adsStatus = Signal(str)
+    adsChanged = Signal(int)                # episode id; 0 = several, from a peer
 
     def __init__(self, dry_run_sync: bool = False, parent: QObject | None = None):
         super().__init__(parent)
@@ -116,13 +122,19 @@ class ServiceHub(QObject):
         self.lan_service.statusChanged.connect(self.lanStatus)
         self.queue.intentChanged.connect(self.lan.push_snapshot_soon)
 
+        self.ads = AdDetector(self.queue, self.downloads, self)
+        self.ads.statusChanged.connect(self.adsStatus)
+        self.ads.detected.connect(self._on_ads_detected)
+
     def start(self) -> None:
         """Kick off the work that shouldn't happen during construction."""
         self.lan.start()
         self.sync_scheduler.trigger()
         self.refresher.refresh_all()
+        self.ads.start()
 
     def shutdown(self) -> None:
+        self.ads.shutdown()
         self.lan.stop()
         self.lan_thread.quit()
         if not self.lan_thread.wait(2000):
@@ -207,6 +219,14 @@ class ServiceHub(QObject):
     def _on_lan_merged(self, counts: dict) -> None:
         self.queue.reconcile()
         self.stateMerged.emit(dict(counts))
+        if counts.get("ads"):
+            self.adsChanged.emit(0)
+            # A peer's run (or its user's "no ads here") can make ours moot.
+            self.ads.schedule()
+
+    def _on_ads_detected(self, episode_id: int) -> None:
+        self.adsChanged.emit(int(episode_id))
+        self.lan.push_snapshot_soon()
 
     # ------------------------------------------------------------ queue
 
@@ -296,10 +316,14 @@ class ServiceHub(QObject):
         # A few keys are not just stored, they change what the services do.
         if key in ("auto_add_to_queue", "auto_queue_position"):
             self.queue.reconcile()
-        elif key == "download_ahead_n":
+        elif key in ("download_ahead", "download_ahead_n"):
             self.downloads.apply_policy()
         elif key in ("lan_sync_enabled", "lan_port", "lan_scan_subnets"):
             self.lan.restart()
+        elif key in ("ads_detect_enabled", "ads_model", "ads_on_battery"):
+            self.ads.schedule()
+        elif key == "ads_paused":
+            self.ads.set_paused(bool(value))
 
     # ------------------------------------------------------------ LAN
 
@@ -322,6 +346,18 @@ class ServiceHub(QObject):
     def lan_discover(self) -> None:
         self.lan.discover()
 
+    # ------------------------------------------------------------ ads
+
+    def ads_detect(self, episode_id: int) -> None:
+        self.ads.detect_now(int(episode_id))
+
+    def ads_clear(self, episode_id: int) -> None:
+        self.ads.clear(int(episode_id))
+
+    def ads_retry(self) -> None:
+        self.ads.retry_failed()
+
     def announce_state(self) -> None:
         """A front end just attached and knows nothing about live connections."""
         self.lan.announce()
+        self.ads.announce()

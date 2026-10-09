@@ -1,14 +1,16 @@
 package org.aerialpod.android.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -18,12 +20,12 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Forward5
-import androidx.compose.material.icons.filled.Replay30
-import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Replay30
+import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -43,7 +45,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -53,6 +59,7 @@ import org.aerialpod.android.AppGraph
 import org.aerialpod.android.ui.components.Cover
 import org.aerialpod.android.ui.components.formatDuration
 import org.aerialpod.android.ui.components.rememberRichText
+import org.aerialpod.core.ads.AdSpan
 import org.aerialpod.core.db.Repo
 
 /** The desktop's preset ladder (`repo.DEFAULTS["speed_presets"]`). */
@@ -67,6 +74,8 @@ fun PlayerScreen(graph: AppGraph, onBack: () -> Unit) {
     val skipBack by remember(graph) { graph.library.stateLong(Repo.SKIP_BACK_SECS, 10) }
         .collectAsStateWithLifecycle(10L)
     var scrubbing by remember { mutableStateOf<Float?>(null) }
+    val adSpans by graph.adSkips.spans.collectAsStateWithLifecycle()
+    val adsElsewhere by graph.adSkips.foundElsewhere.collectAsStateWithLifecycle()
     var showSleep by remember { mutableStateOf(false) }
     val episode by remember(state.episodeId) {
         state.episodeId?.let { graph.library.episode(it) } ?: flowOf(null)
@@ -138,6 +147,16 @@ fun PlayerScreen(graph: AppGraph, onBack: () -> Unit) {
                 enabled = state.durationMs > 0,
                 modifier = Modifier.fillMaxWidth(),
             )
+            AdTrack(spans = adSpans, durationMs = state.durationMs)
+            if (adsElsewhere) {
+                Text(
+                    "Ads were found in another copy of this episode, a different " +
+                        "length from this one, so they won't be skipped here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     formatDuration((fraction * state.durationMs).toLong() / 1000),
@@ -267,4 +286,23 @@ private fun replayIcon(seconds: Long): ImageVector = when (seconds) {
     10L -> Icons.Filled.Replay10
     30L -> Icons.Filled.Replay30
     else -> Icons.Filled.FastRewind
+}
+
+/** Where the ad breaks are, as a thin strip under the seek bar. */
+@Composable
+private fun AdTrack(spans: List<AdSpan>, durationMs: Long) {
+    if (spans.isEmpty() || durationMs <= 0) return
+    val color = MaterialTheme.colorScheme.tertiary
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(4.dp)
+            .semantics { contentDescription = "${spans.size} ad breaks will be skipped" },
+    ) {
+        for (span in spans) {
+            val start = size.width * span.startMs / durationMs
+            val end = size.width * span.endMs / durationMs
+            drawRect(color, topLeft = Offset(start, 0f), size = Size(maxOf(end - start, 2f), size.height))
+        }
+    }
 }

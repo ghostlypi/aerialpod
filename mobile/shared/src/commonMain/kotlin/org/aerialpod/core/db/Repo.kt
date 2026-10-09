@@ -418,6 +418,7 @@ class Repo(
         const val LAN_DEVICE_ID = "lan_device_id"
         const val LAN_PORT = "lan_port"
         const val LAN_SYNC_ENABLED = "lan_sync_enabled"
+        const val ADS_SKIP_ENABLED = "ads_skip_enabled"
         const val DEFAULT_LAN_PORT = 47722L
     }
 }

@@ -1,0 +1,50 @@
+-- Ad spans found by a desktop's detector, replicated over the peer mesh.
+-- The phone never detects anything itself; it only receives, echoes and
+-- skips. Same shape as the desktop's `ad_segments` (db/migrations.py #4-#6).
+--
+-- `spans` is JSON [[start_ms, end_ms, confidence], ...]; an empty list means
+-- "analysed, no ads". `duration_ms` is the length of the copy that was
+-- analysed. `anchors` (the desktop's ads/anchors.py) locate the spans in
+-- another copy with different ads spliced in; without them, spans only apply
+-- to a copy of the analysed length.
+
+CREATE TABLE ad_segments (
+  episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  duration_ms INTEGER NOT NULL,
+  spans TEXT NOT NULL,
+  anchors TEXT,                 -- JSON, parallel to spans: where they sit in the file
+  audio_bytes INTEGER,          -- the analysed file itself, which the desktop
+  audio_sha256 TEXT,            -- that analysed it can hand over (FileFetch)
+  model TEXT,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT NOT NULL
+);
+
+adSegmentsFor:
+SELECT * FROM ad_segments WHERE episode_id = ?;
+
+adSegmentsStamp:
+SELECT updated_at, updated_by FROM ad_segments WHERE episode_id = ?;
+
+upsertAdSegments:
+INSERT INTO ad_segments(episode_id, duration_ms, spans, anchors, audio_bytes, audio_sha256,
+  model, updated_at, updated_by)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(episode_id) DO UPDATE SET
+  duration_ms = excluded.duration_ms,
+  spans = excluded.spans,
+  anchors = excluded.anchors,
+  audio_bytes = excluded.audio_bytes,
+  audio_sha256 = excluded.audio_sha256,
+  model = excluded.model,
+  updated_at = excluded.updated_at,
+  updated_by = excluded.updated_by;
+
+-- Bounded like the desktop's _build_ads(): the queue, plus recent rows.
+adsForSnapshot:
+SELECT a.*, e.guid, e.media_url, p.feed_url FROM ad_segments a
+JOIN episodes e ON e.id = a.episode_id
+JOIN podcasts p ON p.id = e.podcast_id
+WHERE a.episode_id IN (SELECT episode_id FROM queue) OR a.updated_at > :recentAfter
+ORDER BY a.updated_at DESC
+LIMIT :limit;

@@ -14,6 +14,9 @@ Message types after the handshake:
   snapshot  {"type":"snapshot", ...}                   — full replicated state
   position  {"type":"position", ...}                   — live playback push
   ping      {"type":"ping"}                            — keepalive
+
+An ident with "purpose": "file" opens a link for one file transfer instead —
+file_get / file_head / file_chunk / file_end / file_err, described in files.py.
 """
 
 from __future__ import annotations

@@ -7,7 +7,9 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,6 +27,7 @@ import androidx.navigation.navArgument
 import org.aerialpod.android.AppGraph
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.aerialpod.android.ui.components.MiniPlayer
+import org.aerialpod.android.ui.components.formatDuration
 import org.aerialpod.android.ui.nav.Routes
 import org.aerialpod.android.ui.nav.TopLevel
 import org.aerialpod.android.ui.screens.EpisodeDetailScreen
@@ -54,6 +57,21 @@ fun AerialPodApp(graph: AppGraph) {
         graph.actions.messages.collect { message ->
             snackbar.currentSnackbarData?.dismiss()
             snackbar.showSnackbar(message)
+        }
+    }
+
+    // The coordinator skips ads from inside the service; this is only the
+    // chance to change your mind, wherever in the app you happen to be.
+    LaunchedEffect(graph) {
+        graph.adSkips.skipped.collect { skip ->
+            snackbar.currentSnackbarData?.dismiss()
+            val length = formatDuration((skip.endMs - skip.startMs) / 1000)
+            val result = snackbar.showSnackbar(
+                message = "Skipped ad ($length)",
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed) graph.adSkips.undo()
         }
     }
 

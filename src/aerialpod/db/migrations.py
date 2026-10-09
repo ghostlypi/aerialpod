@@ -153,6 +153,42 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE podcast_settings ADD COLUMN auto_queue_position TEXT;
     """,
+    # 4 — ad spans found by the local detector (ads/), replicated to peers.
+    #
+    # One row per episode, holding every span, because a detection run is one
+    # judgement about one file and is only ever replaced whole: a re-run or a
+    # "there were no ads" from the user supersedes the previous row outright.
+    # An empty `spans` is therefore meaningful — analysed, nothing found — and
+    # is what stops the detector picking the episode up again.
+    #
+    # `duration_ms` is the length of the audio that was analysed. A dynamically
+    # inserted ad makes another copy of the "same" episode a different length,
+    # and the players refuse to apply spans to a copy that does not match.
+    """
+    CREATE TABLE ad_segments (
+      episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+      duration_ms INTEGER NOT NULL,
+      spans TEXT NOT NULL,          -- JSON [[start_ms, end_ms, confidence], ...]
+      model TEXT,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL
+    );
+    """,
+    # 5 — where each ad span sits in the analysed file's bytes (ads/anchors.py),
+    # so another copy of the episode, with different ads spliced in, can find
+    # the same spans. NULL from a detector that predates it: those spans then
+    # only apply to a copy of exactly the analysed length.
+    """
+    ALTER TABLE ad_segments ADD COLUMN anchors TEXT;
+    """,
+    # 6 — which file the spans were found in, so the device that analysed it
+    # can hand that exact file to a peer (lan/files.py) and the peer can check
+    # it got it. Set only on the analysing device's own copy of the row… and
+    # replicated, so the phone knows what to ask for and what to expect.
+    """
+    ALTER TABLE ad_segments ADD COLUMN audio_bytes INTEGER;
+    ALTER TABLE ad_segments ADD COLUMN audio_sha256 TEXT;
+    """,
 ]
 
 

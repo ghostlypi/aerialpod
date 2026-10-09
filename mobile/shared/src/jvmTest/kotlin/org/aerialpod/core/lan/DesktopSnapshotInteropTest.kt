@@ -59,6 +59,17 @@ class DesktopSnapshotInteropTest {
         assertEquals(742L, position.position)
         assertEquals(3600L, position.total)
         assertEquals(4400L, position.updatedAt)
+
+        val ads = desktop.ads.single()
+        assertEquals("guid-1-1", ads.guid)
+        assertEquals(3_600_000L, ads.durationMs)
+        assertEquals(listOf(listOf(60_000.0, 120_000.0, 0.93)), ads.spans)
+        assertEquals("qwen3.5-4b", ads.model)
+        assertEquals(4500L, ads.updatedAt)
+        assertEquals("desktop9", ads.updatedBy)
+        assertEquals(1_416_000L, ads.anchors!!.single().pre.single().at)
+        assertEquals("AwQF", ads.anchors!!.single().post.single().b)
+        assertEquals(AudioRef(86_400_000, "ab".repeat(32)), ads.audio)
     }
 
     @Test
@@ -66,7 +77,7 @@ class DesktopSnapshotInteropTest {
         val device = Device("mobile01")
         val counts = device.sync.mergeSnapshot(desktop)
 
-        assertEquals(MergeCounts(positions = 1, intents = 2, settings = 1), counts)
+        assertEquals(MergeCounts(positions = 1, intents = 2, settings = 1, ads = 1), counts)
         assertEquals(listOf(1L), device.queueIds())
         assertTrue(device.isExcluded(3))
         assertEquals("Desktop Title", device.settings()?.custom_title)
@@ -107,7 +118,7 @@ class DesktopSnapshotInteropTest {
         val theirs = LanJson.parseToJsonElement(LanVectors.DESKTOP_SNAPSHOT).jsonObject
 
         assertEquals(theirs.keys, ours.keys, "snapshot envelope")
-        for (section in listOf("intents", "settings", "positions")) {
+        for (section in listOf("intents", "settings", "positions", "ads")) {
             assertEquals(
                 theirs.recordKeys(section),
                 ours.recordKeys(section),

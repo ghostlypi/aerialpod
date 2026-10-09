@@ -17,7 +17,8 @@ import org.aerialpod.core.epochSeconds
  *  - In-progress episodes insert after the playing item and the leading pinned
  *    block; fresh episodes append at the end in pub_date order — unless their
  *    podcast is set to 'front', which puts them at the top instead, newest
- *    first.
+ *    first, above in-progress episodes — and keeps them there on every later
+ *    reconcile, not just the one that added them.
  *
  * Every user-facing op records intent as well as changing the queue. That is
  * what reaches the other devices: the queue itself is derived truth that each
@@ -342,6 +343,17 @@ class QueueManager(
             // the head block, newest first, so this morning's episode takes the top
             // slot and yesterday's sits below it. Anything playing or explicitly
             // pinned still outranks it.
+            //
+            // That holds on every pass, not only the one that added it: once
+            // queued, a front episode is an ordinary row in `rest`, and without
+            // this block the in-progress floaters overtake it on the very next
+            // reconcile — which is how this feature quietly regressed before.
+            val queuedFront = rest.filter { id ->
+                val episode = repo.episodeById(id)
+                survivorById[id]?.pinned == 0L &&
+                    episode != null && episode.position_secs == 0L &&
+                    repo.effectiveQueuePosition(episode.podcast_id) == "front"
+            }
             val untouched = candidates.filter { it.position_secs == 0L }
             val front = untouched
                 .filter { repo.effectiveQueuePosition(it.podcast_id) == "front" }
@@ -352,8 +364,9 @@ class QueueManager(
 
             val order = head +
                 front.map { it.id } +
+                queuedFront +
                 floaters +
-                rest.filter { it !in floating } +
+                rest.filter { it !in floating && it !in queuedFront } +
                 back.map { it.id }
 
             val oldOrder = survivors.map { it.episode_id }

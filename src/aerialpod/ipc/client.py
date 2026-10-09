@@ -35,6 +35,8 @@ class DaemonClient(QObject):
     downloadStarted = Signal(int)
     downloadFinished = Signal(int)
     downloadFailed = Signal(int, str)
+    adsStatus = Signal(str)
+    adsChanged = Signal(int)
 
     # ---- about the connection itself
     availabilityChanged = Signal(bool)   # daemon reachable / not
@@ -44,7 +46,7 @@ class DaemonClient(QObject):
         "subscriptionsChanged", "refreshStarted", "podcastRefreshed",
         "refreshFinished", "refreshError", "peersChanged", "lanStatus",
         "pairingChanged", "stateMerged", "downloadStarted", "downloadFinished",
-        "downloadFailed",
+        "downloadFailed", "adsStatus", "adsChanged",
     )
 
     def __init__(self, backend, parent: QObject | None = None):
@@ -136,6 +138,15 @@ class DaemonClient(QObject):
 
     def lan_discover(self) -> None:
         self._send("lan_discover")
+
+    def ads_detect(self, episode_id: int) -> None:
+        self._send("ads_detect", int(episode_id))
+
+    def ads_clear(self, episode_id: int) -> None:
+        self._send("ads_clear", int(episode_id))
+
+    def ads_retry(self) -> None:
+        self._send("ads_retry")
 
     def announce_state(self) -> None:
         """Ask the daemon to re-emit live state we cannot read from the database."""

@@ -16,8 +16,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.aerialpod.android.appGraph
 import org.aerialpod.core.db.Episodes
+import org.aerialpod.core.lan.FetchResult
+import org.aerialpod.core.lan.FileRequest
+import org.aerialpod.core.lan.FileSink
 import java.io.File
 import java.io.RandomAccessFile
+import java.security.MessageDigest
 
 /**
  * One download pass: evict what the policy no longer wants, then fetch what it
@@ -56,6 +60,7 @@ class DownloadWorker(
                 if (failures >= MAX_FAILURES) return@withContext Result.retry()
             }
         }
+        if (!isStopped) upgradeToAnalysedCopies()
         Result.success()
     }
 
@@ -68,6 +73,34 @@ class DownloadWorker(
 
         core.repo.setDownloadState(episode.id, "downloading")
 
+        // The copy a desktop found ads in, when one did and it can be reached;
+        // the podcast's server otherwise. A partial left by the desktop is the
+        // wrong bytes to resume from the server — different ads, different file.
+        val ok = fromDesktop(episode, part) || run {
+            discardDesktopPartial(part)
+            fromServer(episode, part)
+        }
+
+        if (!ok) {
+            core.repo.setDownloadState(episode.id, "none")
+            return false
+        }
+
+        if (!part.renameTo(destination)) {
+            core.repo.setDownloadState(episode.id, "none")
+            return false
+        }
+        core.repo.setDownloadState(episode.id, "done", destination.path)
+
+        // A download is a gpodder action in its own right: it is how the other
+        // devices learn this episode was taken offline here.
+        core.repo.podcastById(episode.podcast_id)?.let { podcast ->
+            core.repo.enqueueAction(podcast.feed_url, episode.media_url, "download")
+        }
+        return true
+    }
+
+    private suspend fun fromServer(episode: Episodes, part: File): Boolean {
         val existing = if (part.exists()) part.length() else 0L
 
         // `prepareGet { execute { } }`, never `get()`. A plain `get()` reads the
@@ -100,24 +133,109 @@ class DownloadWorker(
                 }
             }
         }
+        return ok
+    }
 
-        if (!ok) {
-            core.repo.setDownloadState(episode.id, "none")
+    // ---------------------------------------------------------------- from a desktop
+
+    /**
+     * Fetch the exact file a desktop found this episode's ads in, from that
+     * desktop (the `updated_by` of its ad row), into [part].
+     *
+     * The server hands every download its own ads, so its copy only roughly
+     * fits the spans; this one fits exactly. Verified against the size and
+     * SHA-256 the desktop recorded before anything is kept. A transfer cut short
+     * leaves `part` plus a marker naming the file, so a later pass resumes it.
+     */
+    private suspend fun fromDesktop(episode: Episodes, part: File): Boolean {
+        val core = graph.core
+        val row = core.repo.db.adSegmentsQueries.adSegmentsFor(episode.id).executeAsOneOrNull()
+            ?: return false
+        val sha = row.audio_sha256 ?: return false
+        val bytes = row.audio_bytes ?: return false
+        val podcast = core.repo.podcastById(episode.podcast_id) ?: return false
+
+        val marker = markerFor(part)
+        val resumable = part.exists() && marker.exists() && marker.readText() == sha &&
+            part.length() < bytes
+        if (!resumable) part.delete()
+        part.parentFile?.mkdirs()
+        marker.writeText(sha)
+        val offset = if (resumable) part.length() else 0L
+
+        val result = RandomAccessFile(part, "rw").use { file ->
+            file.seek(offset)
+            core.lan.fetchFile(
+                row.updated_by,
+                FileRequest(podcast.feed_url, episode.guid, episode.media_url, offset),
+                object : FileSink {
+                    override suspend fun head(bytes: Long, sha256: String) =
+                        bytes == row.audio_bytes && sha256 == sha
+
+                    override suspend fun write(offset: Long, data: ByteArray) {
+                        if (isStopped) throw CancellationException("download cancelled")
+                        file.write(data)
+                    }
+                },
+            )
+        }
+        if (result !is FetchResult.Complete) {
+            // Refused means the desktop no longer has it: the partial is dead weight.
+            if (result is FetchResult.Refused) discardDesktopPartial(part)
             return false
         }
+        val good = part.length() == bytes && sha256Of(part) == sha
+        marker.delete()
+        if (!good) part.delete()
+        return good
+    }
 
-        if (!part.renameTo(destination)) {
-            core.repo.setDownloadState(episode.id, "none")
-            return false
-        }
-        core.repo.setDownloadState(episode.id, "done", destination.path)
+    /**
+     * Swap in the analysed copy for episodes already downloaded from the
+     * server, now that a desktop has analysed them — but only ones not yet
+     * started: a saved position belongs to the old copy's timeline, and would
+     * land seconds off in the new one.
+     */
+    private suspend fun upgradeToAnalysedCopies() {
+        val core = graph.core
+        val queued = core.repo.queueEpisodeIds()
+        for (episode in core.repo.db.episodesQueries.downloadedEpisodes().executeAsList()) {
+            if (isStopped) return
+            if (episode.download_state != "done" || episode.id !in queued) continue
+            if (episode.position_secs > 0) continue
+            val path = episode.downloaded_path ?: continue
+            val current = File(path).takeIf { it.exists() } ?: continue
+            val row = core.repo.db.adSegmentsQueries.adSegmentsFor(episode.id)
+                .executeAsOneOrNull() ?: continue
+            if (row.audio_sha256 == null || row.audio_bytes == current.length()) continue
 
-        // A download is a gpodder action in its own right: it is how the other
-        // devices learn this episode was taken offline here.
-        core.repo.podcastById(episode.podcast_id)?.let { podcast ->
-            core.repo.enqueueAction(podcast.feed_url, episode.media_url, "download")
+            val part = File("$path.analysed.part")
+            if (fromDesktop(episode, part) && part.renameTo(current)) continue
+            discardDesktopPartial(part)
         }
-        return true
+    }
+
+    private fun markerFor(part: File) = File(part.path + ".desktop")
+
+    private fun discardDesktopPartial(part: File) {
+        val marker = markerFor(part)
+        if (marker.exists()) {
+            part.delete()
+            marker.delete()
+        }
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(CHUNK)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun writeTo(
@@ -145,6 +263,7 @@ class DownloadWorker(
         episode.downloaded_path?.let { path ->
             File(path).delete()
             File("$path.part").delete()
+            File("$path.part.desktop").delete()
         }
         graph.core.repo.setDownloadState(episode.id, "none", null)
     }

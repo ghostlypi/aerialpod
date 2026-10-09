@@ -13,6 +13,9 @@ A desktop podcast player for Linux (Fedora/GNOME first) that syncs with
 - **In-app playback** (Qt6 Multimedia) with runtime audio-device switching —
   follow the system default or pin a device, no restart needed.
 - **MPRIS2** integration: GNOME media keys and the shell media widget.
+- **AI ad removal** — a machine with a GPU finds the ads in your queue with a
+  local model, and every paired device skips them, phone included. Nothing
+  leaves your own devices. See [below](#ai-ad-removal).
 - AntennaPod-style customization: themes/accents (follows GNOME dark mode),
   per-podcast speed/skip/auto-queue settings, configurable home sections.
 - **Daily shows can claim the top slot** — set a podcast's *New episodes* to
@@ -101,6 +104,76 @@ What this still assumes: the pairing code itself is the whole secret. Anyone
 who gets a look at it can sync with you, so treat it like a password — and if
 one leaks, press **New code**. The keys live in the GNOME keyring, falling
 back to a `0600` file where there is no Secret Service.
+
+## AI ad removal
+
+One machine with a GPU finds the ads in your queued episodes, and every
+paired device, phone included, skips them. Playback jumps past an ad as it
+reaches one, with a few seconds to press **Undo** and hear it after all.
+Seeking back into an ad you already passed plays it.
+
+```sh
+./install.sh ai                         # the detector's toolchain, in its own venv
+systemctl --user restart aerialpod-daemon
+```
+
+That's it. The daemon works through the whole queue, one episode at a time,
+and Settings → Ad removal shows how far it has got. A queued episode that
+isn't downloaded is fetched for analysis and evicted again afterwards. On a
+laptop, it waits for AC power unless you tell it otherwise.
+
+**How it finds them.** Whisper transcribes the episode on the GPU, with a
+time for every word. Then [SemIf](https://github.com/TheoLeeCJ/SemIf) asks
+open models one question per stretch of transcript: is this line an ad that
+interrupts the show? SemIf reads the answer straight off the model's logits in
+a single forward pass, without generating text, so the timestamps come from
+the transcript and are never parsed out of a model's prose.
+
+It asks twice. Qwen3.5-9B scans the whole episode, ten-odd seconds at a time.
+Then Qwen3.8-27B, a much stronger model, goes back over every stretch the
+scan had any suspicion of, a sentence or two at a time, and decides where
+each ad really starts and ends. On 19 hand-labelled ad breaks across eight
+episodes, that took the share of ad speech skipped from 90% (the single small
+model this replaced) to 98%, and halved the show wrongly cut, from 134 s to
+64 s. No breaks were missed.
+
+It's slow by design, since it runs while you sleep. On an RTX 5070 Laptop
+(8 GB), a two-hour episode takes about 15 minutes. The 27B is a 16.5 GB model,
+so it runs partly on the GPU and partly in system RAM; it wants about 20 GB of
+free memory. The first run downloads about 40 GB of model weights from Hugging
+Face. Machines without a CUDA GPU fall back to a single small model on the
+CPU, which is much slower and less accurate. **Model** in Settings → Ad
+removal switches to the faster single-model scan.
+
+It's tuned to skip too little rather than too much. Host-read sponsor
+segments and inserted commercials are caught. A TV-promo spot that is all
+trailer audio and no call to action sometimes isn't. If it gets an episode
+wrong, right-click it in the queue: **No ads here** clears it on every
+device, and **Find ads again** reruns it.
+
+**Getting it to your phone.** Most podcast hosts splice ads in when you
+download, so a copy of an episode fetched at another time has different ads,
+of different lengths. So the machine that analysed an episode keeps that exact
+file while the episode is queued. When your phone downloads an episode, it
+takes that copy from the computer over the paired, encrypted sync connection,
+checks its SHA-256, and only goes to the podcast's server if the computer
+can't be reached. An episode the phone had already downloaded from the server
+is swapped for the analysed copy, as long as you haven't started it yet.
+
+When the phone does end up with a different copy, the ads are still found in
+it. The show's own audio is byte-for-byte the same in every copy, just
+shifted, so with each ad the detector records a few short runs of the show's
+bytes from either side of it, and the phone finds those in its own file and
+moves each ad's edges to match. A stream has no file to search, so ads in a
+stream are only skipped if it is the same length as the analysed copy.
+
+Results travel over [device sync](#syncing-your-own-machines-settings--device-sync)
+like everything else. Nothing is sent to anyone but your own devices, and the
+transcript never leaves the machine that did the analysis. Keeping analysed
+episodes costs that machine some disk: about 100–170 MB per queued episode,
+freed as you play them. The
+Flatpak can't run the detector (its sandbox can't reach the toolchain), but it
+skips ads that another device found.
 
 ## The background service
 

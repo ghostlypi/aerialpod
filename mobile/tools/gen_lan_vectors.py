@@ -25,6 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))  # tests.test_ads_anchors builds the anchor case's files
 
 from aerialpod.lan import crypto, pairing, protocol  # noqa: E402
 from aerialpod.lan import state  # noqa: E402
@@ -146,6 +147,13 @@ def desktop_snapshot() -> dict:
                 c.execute(
                     "INSERT INTO queue_exclusions(episode_id, removed_at) VALUES(3, 4200)"
                 )
+                # Episode 1 is queued, so its spans ride along despite the old stamp.
+                repo.set_ad_segments(c, 1, 3_600_000, [[60_000, 120_000, 0.93]],
+                                     anchors=[{"pre": [{"at": 1_416_000, "b": "AAEC"}],
+                                               "post": [{"at": 2_904_000, "b": "AwQF"}]}],
+                                     audio={"bytes": 86_400_000, "sha256": "ab" * 32},
+                                     model="qwen3.5-4b", updated_at=4500,
+                                     updated_by="desktop9")
             conn.execute(
                 "INSERT INTO podcast_settings(podcast_id, custom_title, playback_speed, "
                 "skip_intro_secs, skip_outro_secs, auto_add_to_queue, auto_queue_position, "
@@ -215,6 +223,36 @@ def build() -> dict:
         "code_parse_fail": ["", "AAAA", "not a code at all", "9" * 32],
         "transcript": transcript(),
         "desktop": desktop_snapshot(),
+        "anchors": anchor_case(),
+    }
+
+
+def anchor_case() -> dict:
+    """Spans carried onto a copy with different ads, by ads/anchors.py.
+
+    The files are synthetic, built by tests/test_ads_anchors.py's fill(), which
+    AdAnchorsTest.kt repeats exactly — so the Kotlin side rebuilds both copies,
+    applies the desktop's anchors, and must land where the desktop did.
+    """
+    import tempfile
+
+    from aerialpod.ads import anchors
+    from tests import test_ads_anchors as t
+
+    other_ads, other_tag = (20, 75, 10), 777
+    other_ms = (300 + sum(other_ads) + 400 + 200) * 1000
+    with tempfile.TemporaryDirectory() as tmp:
+        a = Path(tmp) / "a.mp3"
+        a.write_bytes(t.episode(t.ANALYSED_ADS))
+        b = Path(tmp) / "b.mp3"
+        b.write_bytes(t.episode(other_ads, t.id3(other_tag)))
+        marks = anchors.make_anchors(anchors.Audio(a, t.ANALYSED_MS), t.SPANS, t.ANALYSED_MS)
+        mapped = anchors.map_spans(t.SPANS, marks, t.ANALYSED_MS,
+                                   anchors.Audio(b, other_ms), other_ms)
+    return {
+        "analysed_ads": list(t.ANALYSED_ADS), "analysed_ms": t.ANALYSED_MS,
+        "other_ads": list(other_ads), "other_id3": other_tag, "other_ms": other_ms,
+        "spans": t.SPANS, "anchors": marks, "expected": mapped,
     }
 
 
@@ -323,6 +361,9 @@ def emit(vectors: dict) -> str:
         f'    const val DESKTOP_SNAPSHOT = {kt_string(vectors["desktop"]["snapshot"])}',
         "",
         f'    const val DESKTOP_POSITION = {kt_string(vectors["desktop"]["position"])}',
+        "",
+        "    // Spans the desktop carried onto a copy with different ads (ads/anchors.py).",
+        f'    const val ANCHOR_CASE = {kt_string(vectors["anchors"])}',
         "}",
         "",
     ]

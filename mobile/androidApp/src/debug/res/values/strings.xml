@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds install beside the Play one; a different name keeps the two
+     apart in the launcher and in Android Auto. -->
+<resources>
+    <string name="app_name">AerialDebug</string>
+</resources>

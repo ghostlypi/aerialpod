@@ -1,5 +1,6 @@
 package org.aerialpod.core.lan
 
+import org.aerialpod.core.ads.AdSpan
 import org.aerialpod.core.db.Episodes
 import org.aerialpod.core.db.Repo
 import org.aerialpod.core.epochSeconds
@@ -63,6 +64,23 @@ class SnapshotSync(
                 finished = it.state == "played",
             )
         },
+        ads = db.adSegmentsQueries.adsForSnapshot(now() - ADS_RECENT_SECS, ADS_LIMIT)
+            .executeAsList().mapNotNull {
+                AdsRecord(
+                    feed = it.feed_url,
+                    guid = it.guid,
+                    media = it.media_url,
+                    durationMs = it.duration_ms,
+                    spans = parseSpans(it.spans) ?: return@mapNotNull null,
+                    anchors = it.anchors?.let(::parseAnchors),
+                    audio = it.audio_sha256?.let { sha ->
+                        AudioRef(it.audio_bytes ?: 0, sha)
+                    }?.takeIf { ref -> ref.valid },
+                    model = it.model,
+                    updatedAt = it.updated_at,
+                    updatedBy = it.updated_by,
+                )
+            },
     )
 
     /**
@@ -118,6 +136,9 @@ class SnapshotSync(
         val settings = snapshot.settings.mapNotNull { rec ->
             matcher.matchPodcast(rec.feed)?.let { rec to it }
         }
+        val ads = snapshot.ads.mapNotNull { rec ->
+            matcher.resolveEpisode(rec.feed, rec.guid, rec.media)?.let { rec to it }
+        }
 
         var counts = MergeCounts()
         db.transaction {
@@ -129,6 +150,9 @@ class SnapshotSync(
             }
             for ((rec, podcast) in settings) {
                 counts += MergeCounts(settings = applySettings(rec, podcast.id))
+            }
+            for ((rec, episode) in ads) {
+                counts += MergeCounts(ads = applyAds(rec, episode.id))
             }
             if (counts.intents > 0) renumberQueue()
         }
@@ -231,6 +255,27 @@ class SnapshotSync(
         return 1
     }
 
+    private fun applyAds(record: AdsRecord, episodeId: Long): Int {
+        val spans = validSpans(record.spans) ?: return 0
+        if (record.durationMs <= 0) return 0
+        val local = db.adSegmentsQueries.adSegmentsStamp(episodeId).executeAsOneOrNull()
+        if (local != null && !isNewer(record.updatedAt, record.updatedBy, local.updated_at, local.updated_by)) {
+            return 0
+        }
+        db.adSegmentsQueries.upsertAdSegments(
+            episode_id = episodeId,
+            duration_ms = record.durationMs,
+            spans = encodeSpans(spans),
+            anchors = record.anchors?.takeIf { it.size == spans.size }?.let(::encodeAnchors),
+            audio_bytes = record.audio?.takeIf { it.valid }?.bytes,
+            audio_sha256 = record.audio?.takeIf { it.valid }?.sha256,
+            model = record.model,
+            updated_at = record.updatedAt,
+            updated_by = record.updatedBy,
+        )
+        return 1
+    }
+
     /**
      * Last-writer-wins, with a deterministic tie-break so both ends of a
      * conflict reach the same answer without another round trip.
@@ -264,3 +309,31 @@ class SnapshotSync(
         }
     }
 }
+
+// ---------------------------------------------------------------- ad spans
+
+/**
+ * Spans drive seeks, so a malformed record is dropped whole rather than half
+ * applied — the rule `_valid_spans()` enforces on the desktop.
+ */
+internal fun validSpans(raw: List<List<Double>>): List<AdSpan>? = raw.map { span ->
+    if (span.size != 3) return null
+    val (start, end, confidence) = span
+    if (start < 0 || end <= start || confidence < 0 || confidence > 1) return null
+    AdSpan(start.toLong(), end.toLong(), confidence)
+}
+
+/** Stored as the desktop stores it: `[[start_ms, end_ms, confidence], ...]`. */
+internal fun encodeSpans(spans: List<AdSpan>): String =
+    spans.joinToString(",", "[", "]") { "[${it.startMs},${it.endMs},${it.confidence}]" }
+
+internal fun parseSpans(json: String): List<List<Double>>? = runCatching {
+    LanJson.decodeFromString<List<List<Double>>>(json)
+}.getOrNull()
+
+internal fun parseAnchors(json: String): List<SpanAnchors>? = runCatching {
+    LanJson.decodeFromString<List<SpanAnchors>>(json)
+}.getOrNull()
+
+internal fun encodeAnchors(anchors: List<SpanAnchors>): String =
+    LanJson.encodeToString(anchors)

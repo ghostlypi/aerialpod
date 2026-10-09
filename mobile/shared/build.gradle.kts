@@ -19,6 +19,13 @@ sqldelight {
             // SQLite 3.24+. Pinning the dialect here makes a query that would
             // fail on the device fail at compile time instead.
             dialect("app.cash.sqldelight:sqlite-3-25-dialect:${libs.versions.sqldelight.get()}")
+            // databases/N.db is the schema as shipped at version N (1.db is
+            // what the first Play release created). verifyMigrations replays
+            // N.sqm over it and fails the build unless the result is exactly
+            // what the .sq files declare — an upgrade can't silently diverge
+            // from a fresh install.
+            schemaOutputDirectory.set(file("src/commonMain/sqldelight/databases"))
+            verifyMigrations.set(true)
         }
     }
 }

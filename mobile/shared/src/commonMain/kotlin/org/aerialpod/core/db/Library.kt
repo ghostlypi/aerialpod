@@ -89,6 +89,11 @@ class Library(
             rows.firstOrNull()?.value_?.toLongOrNull() ?: default
         }
 
+    fun stateBool(key: String, default: Boolean): Flow<Boolean> =
+        db.syncQueries.getState(key).asFlow().mapToList(io).map { rows ->
+            rows.firstOrNull()?.value_?.toBooleanStrictOrNull() ?: default
+        }
+
     /**
      * How much of the queue to keep downloaded, following changes.
      *

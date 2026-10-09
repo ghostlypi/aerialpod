@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
         client.peersChanged.connect(self._on_lan_peers)
         client.lanStatus.connect(self._on_lan_status)
         client.stateMerged.connect(self._on_lan_merged)
+        client.adsChanged.connect(self._on_ads_changed)
         client.availabilityChanged.connect(self._on_daemon_availability)
 
         # ---- layout
@@ -134,6 +135,8 @@ class MainWindow(QMainWindow):
 
         self.settings_page = SettingsPage(client)
         self.settings_page.themeChanged.connect(self.theme.apply)
+        self.settings_page.adsSkipChanged.connect(self.player.set_ads_enabled)
+        client.adsStatus.connect(self.settings_page.show_ads_status)
 
         self.home_page = HomePage(self.queue, client)
         self.home_page.playRequested.connect(self.play_episode)
@@ -340,6 +343,11 @@ class MainWindow(QMainWindow):
         self._on_queue_changed()
         if counts.get("intents") or counts.get("settings"):
             self._status("Synced with a device on your network", 4000)
+
+    def _on_ads_changed(self, episode_id: int) -> None:
+        ep = self.player.episode
+        if ep is not None and episode_id in (0, ep.id):
+            self.player.reload_ads()
 
     def _on_lan_peers(self, peers: list) -> None:
         self.settings_page.show_lan_peers(peers)

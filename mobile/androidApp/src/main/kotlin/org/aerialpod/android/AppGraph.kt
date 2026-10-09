@@ -16,6 +16,7 @@ import org.aerialpod.android.sync.BackgroundSync
 import org.aerialpod.android.platform.NetworkMonitor
 import org.aerialpod.android.platform.PeerLifecycle
 import org.aerialpod.android.platform.PeerTriggers
+import org.aerialpod.android.playback.AdSkips
 import org.aerialpod.android.playback.PlayerController
 import org.aerialpod.android.platform.PlaybackSignals
 import org.aerialpod.android.store.KeystoreGpodderCredentialStore
@@ -98,6 +99,8 @@ class AppGraph(private val app: Application) {
 
     val player: PlayerController by lazy { PlayerController(app, core, scope) }
 
+    val adSkips = AdSkips()
+
     private val network: NetworkMonitor by lazy {
         NetworkMonitor(app) { core.lan.onPathChanged() }
     }
@@ -131,6 +134,11 @@ class AppGraph(private val app: Application) {
         }
         scope.launch {
             core.queueChanged.collect { Downloads.request(app) }
+        }
+        scope.launch {
+            // A desktop's ad analysis landing means its copy of the episode can
+            // now be fetched (DownloadWorker.fromDesktop) — or swapped in.
+            core.lan.merged.collect { if (it.ads > 0) Downloads.request(app) }
         }
         // Idempotent, and cheap enough to re-assert on every start: it is what
         // repairs the schedule after an app update or a force-stop, both of

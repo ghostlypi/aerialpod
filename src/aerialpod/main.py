@@ -112,6 +112,10 @@ def main() -> int:
     app.setOrganizationName(APP_NAME)
     QGuiApplication.setDesktopFileName(APP_NAME)  # Wayland app_id ↔ .desktop file
 
+    from .ui import wheelguard
+
+    wheelguard.install(app)
+
     if _already_running():
         log.info("another instance is running; asked it to raise itself")
         return 0

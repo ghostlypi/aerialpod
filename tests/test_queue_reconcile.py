@@ -280,6 +280,24 @@ def test_front_beats_an_in_progress_episode(qm, podcast, episodes, daily):
     assert queue_ids()[:2] == [today, episodes[2]]
 
 
+def test_front_stays_above_an_in_progress_episode(qm, podcast, episodes, daily):
+    """Regression: front used to win only on the pass that added it. The next
+    reconcile floated the in-progress episode back over it. Keep it on top,
+    even after the in-progress one is listened to again."""
+    qm.reconcile()
+    repo.update_episode(episodes[2], position_secs=300, total_secs=3000,
+                        position_updated_at=1799999999)
+    today = make_episode(daily, 1, pub_date=1800000000)
+    qm.reconcile()
+    qm.reconcile()
+    assert queue_ids()[:2] == [today, episodes[2]]
+
+    repo.update_episode(episodes[2], position_secs=600,
+                        position_updated_at=1800000500)
+    qm.reconcile()
+    assert queue_ids()[:2] == [today, episodes[2]]
+
+
 def test_other_podcasts_still_append(qm, podcast, episodes, daily):
     make_episode(daily, 1, pub_date=1800000000)
     qm.reconcile()

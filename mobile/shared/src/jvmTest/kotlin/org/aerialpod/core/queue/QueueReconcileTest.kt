@@ -362,6 +362,27 @@ class QueueReconcileTest {
         assertEquals(listOf(today, f.episodes[2]), f.ids().take(2))
     }
 
+    /**
+     * Regression: front used to win only on the pass that added it. The next
+     * reconcile floated the in-progress episode back over it. Keep it on top,
+     * even after the in-progress one is listened to again.
+     */
+    @Test
+    fun frontStaysAboveAnInProgressEpisode() {
+        val f = fx()
+        val daily = f.lib.addDaily()
+        f.qm.reconcile()
+        f.lib.setEpisode(f.episodes[2], position = 300, total = 3000, updatedAt = 1_799_999_999)
+        val today = f.lib.makeEpisode(daily, 1, pubDate = 1_800_000_000)
+        f.qm.reconcile()
+        f.qm.reconcile()
+        assertEquals(listOf(today, f.episodes[2]), f.ids().take(2))
+
+        f.lib.setEpisode(f.episodes[2], position = 600, total = 3000, updatedAt = 1_800_000_500)
+        f.qm.reconcile()
+        assertEquals(listOf(today, f.episodes[2]), f.ids().take(2))
+    }
+
     @Test
     fun otherPodcastsStillAppend() {
         val f = fx()

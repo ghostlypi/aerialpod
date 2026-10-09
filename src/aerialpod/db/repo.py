@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from . import connection, transaction
@@ -18,7 +19,8 @@ DEFAULTS: dict[str, Any] = {
     "volume": 1.0,  # linear QAudioOutput volume, app-level (PipeWire stream)
     "skip_fwd_secs": 30,
     "skip_back_secs": 10,
-    "download_ahead_n": 1,
+    "download_ahead_n": 1,  # older integer form of download_ahead, still written
+    "download_ahead": None,  # '0'|'1'|'5'|'1/4'|'1/3'|'1/2'|'all'; None = download_ahead_n
     "auto_add_to_queue": True,
     "auto_queue_position": "back",  # 'front' puts new episodes under the playing one
     "theme_mode": "system",  # 'system'|'light'|'dark'
@@ -33,6 +35,11 @@ DEFAULTS: dict[str, Any] = {
     "lan_sync_enabled": True,
     "lan_port": 47722,
     "lan_scan_subnets": True,  # unicast sweep of our own subnets (see lan.discovery)
+    # None = on wherever the detector toolchain is installed (ads.detector)
+    "ads_detect_enabled": None,
+    "ads_skip_enabled": True,  # skip detected ads during playback, on this device
+    "ads_paused": False,  # the settings page's pause button; this device only
+    "ads_model": None,  # key into ads.spans.MODELS; None = its DEFAULT_MODEL
 }
 
 
@@ -345,6 +352,96 @@ def is_excluded(eid: int) -> bool:
         .fetchone()
         is not None
     )
+
+
+# ---------------------------------------------------------------- ad segments
+#
+# Spans are [start_ms, end_ms, confidence] lists. The whole row is replaced at
+# once, by a detection run here or a newer row from a peer (lan.state).
+
+
+def ad_segments(eid: int) -> dict[str, Any] | None:
+    row = connection().execute(
+        "SELECT * FROM ad_segments WHERE episode_id=?", (eid,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        **dict(row),
+        "spans": json.loads(row["spans"]),
+        "anchors": json.loads(row["anchors"]) if row["anchors"] else None,
+        "audio": ({"bytes": row["audio_bytes"], "sha256": row["audio_sha256"]}
+                  if row["audio_sha256"] else None),
+    }
+
+
+def set_ad_segments(
+    conn,
+    episode_id: int,
+    duration_ms: int,
+    spans: list[list[float]],
+    *,
+    anchors: list[dict] | None = None,
+    audio: dict | None = None,
+    model: str | None = None,
+    updated_at: int | None = None,
+    updated_by: str | None = None,
+) -> None:
+    conn.execute(
+        "INSERT INTO ad_segments(episode_id, duration_ms, spans, anchors, audio_bytes, "
+        "audio_sha256, model, updated_at, updated_by) VALUES(?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(episode_id) DO UPDATE "
+        "SET duration_ms=excluded.duration_ms, spans=excluded.spans, "
+        "anchors=excluded.anchors, audio_bytes=excluded.audio_bytes, "
+        "audio_sha256=excluded.audio_sha256, model=excluded.model, "
+        "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+        (
+            episode_id,
+            int(duration_ms),
+            json.dumps(spans),
+            json.dumps(anchors) if anchors is not None else None,
+            (audio or {}).get("bytes"),
+            (audio or {}).get("sha256"),
+            model,
+            updated_at if updated_at is not None else int(time.time()),
+            updated_by or lan_device_id(),
+        ),
+    )
+
+
+def kept_analysed_ids() -> set[int]:
+    """Queued episodes whose analysed audio this device still holds.
+
+    Kept past download-ahead so a peer can be handed the exact file the ads
+    were found in (lan/files.py); evicted as usual once the episode leaves the
+    queue. The size check catches a file that was evicted and later replaced
+    by a fresh download — a different copy, with different ads.
+    """
+    rows = connection().execute(
+        "SELECT a.episode_id, a.audio_bytes, e.downloaded_path FROM ad_segments a "
+        "JOIN episodes e ON e.id = a.episode_id "
+        "JOIN queue q ON q.episode_id = a.episode_id "
+        "WHERE a.updated_by = ? AND a.audio_sha256 IS NOT NULL "
+        "AND e.download_state = 'done'",
+        (lan_device_id(),),
+    )
+    return {
+        r["episode_id"] for r in rows
+        if r["downloaded_path"] and Path(r["downloaded_path"]).is_file()
+        and Path(r["downloaded_path"]).stat().st_size == r["audio_bytes"]
+    }
+
+
+def analysed_episode_ids(redo_own_except: set[str] | None = None) -> set[int]:
+    """Episodes with a detection result. With `redo_own_except`, this device's
+    own results stamped with any other model are left out, so they run again."""
+    if redo_own_except is None:
+        return {r[0] for r in connection().execute("SELECT episode_id FROM ad_segments")}
+    return {
+        r["episode_id"]
+        for r in connection().execute("SELECT episode_id, model, updated_by FROM ad_segments")
+        if r["updated_by"] != lan_device_id() or r["model"] in redo_own_except
+    }
 
 
 # ---------------------------------------------------------------- outbox

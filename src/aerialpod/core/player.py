@@ -12,8 +12,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudio, QAudioOutput, QMediaDevices, QMediaPlayer
 
+from ..ads import anchors as ad_anchors
+from ..ads import skip as ad_skip
 from ..db import repo
 from ..db.models import Episode
+from ..workers import run_in_pool
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +41,8 @@ class PlayerService(QObject):
     deviceChanged = Signal(str)              # human-readable description
     devicesListChanged = Signal()
     errorOccurred = Signal(str)
+    adSpansChanged = Signal(list)            # [[start_ms, end_ms, conf]] usable for this copy
+    adSkipped = Signal(int, int)             # start_ms, end_ms of the span just jumped
 
     def __init__(self, client, parent: QObject | None = None):
         super().__init__(parent)
@@ -55,6 +60,15 @@ class PlayerService(QObject):
         self.episode: Episode | None = None
         self._pending_seek_ms: int | None = None
         self._outro_fired = False
+
+        # Ad spans for the current episode (ads.skip has the rules).
+        self._ads: dict | None = None        # its ad_segments row
+        self._ads_mapped: list | None = None # the spans moved onto this copy (ads.anchors)
+        self._ads_map_token: object | None = None
+        self._ads_allowed: set[int] = set()  # undone this session: let them play
+        self._ads_prev_ms: int | None = None
+        self._ads_last: int | None = None    # the span most recently skipped
+        self._ads_enabled = bool(repo.get_state("ads_skip_enabled"))
 
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
@@ -97,6 +111,10 @@ class PlayerService(QObject):
 
         self.episode = ep
         self._outro_fired = False
+        self._ads_allowed.clear()
+        self._ads_prev_ms = None
+        self._ads_last = None
+        self.reload_ads()
 
         # Source: local file when downloaded, else stream.
         if ep.download_state == "done" and ep.downloaded_path and Path(ep.downloaded_path).exists():
@@ -169,6 +187,97 @@ class PlayerService(QObject):
     def set_rate(self, rate: float) -> None:
         self.player.setPlaybackRate(rate)
         self.rateChanged.emit(rate)
+
+    # ------------------------------------------------------------ ads
+
+    def reload_ads(self) -> None:
+        """Re-read the current episode's spans — after a detection run here or
+        a peer's arriving, or the skip setting changing."""
+        self._ads = None
+        self._ads_mapped = None
+        if self.episode is not None and self._ads_enabled:
+            self._ads = repo.ad_segments(self.episode.id)
+        self.adSpansChanged.emit(self._usable_ad_spans())
+        self._map_ads()
+
+    def _map_ads(self) -> None:
+        """Move the spans onto the copy being played, if it is a local file.
+
+        The analysed copy and this one can carry different ads (see
+        ads/anchors.py). Reads a few megabytes per span, so off the main thread.
+        """
+        ep, ads, duration = self.episode, self._ads, self.player.duration()
+        if ep is None or not ads or not ads.get("anchors") or duration <= 0:
+            return
+        if not (ep.download_state == "done" and ep.downloaded_path
+                and Path(ep.downloaded_path).exists()):
+            return
+        token = self._ads_map_token = object()
+        path = ep.downloaded_path
+        run_in_pool(
+            lambda: ad_anchors.map_spans(ads["spans"], ads["anchors"], ads["duration_ms"],
+                                         ad_anchors.Audio(path, duration), duration),
+            on_done=lambda mapped: self._on_ads_mapped(token, mapped),
+            on_error=lambda exc: log.warning("could not place ad spans: %s", exc),
+        )
+
+    def _on_ads_mapped(self, token: object, mapped: list) -> None:
+        if token is not self._ads_map_token:
+            return  # another episode, or newer spans, since this started
+        self._ads_mapped = mapped
+        log.info("placed %d of %d ad span(s) in this copy", len(mapped), len(self._ads["spans"]))
+        self.adSpansChanged.emit(self._usable_ad_spans())
+
+    def set_ads_enabled(self, on: bool) -> None:
+        """Told directly by the settings page: the stored value goes through
+        the daemon, and would not be readable yet."""
+        self._ads_enabled = bool(on)
+        self.reload_ads()
+
+    def _usable_ad_spans(self) -> list:
+        """The spans as placed in this copy, or as found if it is the same length."""
+        if self._ads_mapped is not None:
+            return self._ads_mapped
+        if not self._ads or not ad_skip.applies(self._ads["duration_ms"], self.player.duration()):
+            return []
+        return self._ads["spans"]
+
+    def ads_found_elsewhere(self) -> bool:
+        """Spans exist, but for a copy of a different length — so not here."""
+        return bool(self._ads and self._ads["spans"] and self.player.duration() > 0
+                    and not self._usable_ad_spans())
+
+    def undo_ad_skip(self) -> None:
+        if self._ads_last is None:
+            return
+        start = self._usable_ad_spans()[self._ads_last][0]
+        self._ads_allowed.add(self._ads_last)
+        self._ads_last = None
+        self.player.setPosition(start)
+        self._ads_prev_ms = start
+        self.seeked.emit(start // 1000)
+
+    def _skip_ads(self, ms: int) -> bool:
+        """Jump an ad if playback just ran into one. True if it seeked."""
+        spans = self._usable_ad_spans()
+        prev, self._ads_prev_ms = self._ads_prev_ms, ms
+        if not spans:
+            return False
+        index = ad_skip.span_to_skip(spans, self._ads_allowed, prev, ms)
+        if index is None:
+            return False
+        start, end, _ = spans[index]
+        self._ads_last = index
+        log.info("skipping ad %d:%02d–%d:%02d", start // 60000, start // 1000 % 60,
+                 end // 60000, end // 1000 % 60)
+        if end >= self.player.duration() - ad_skip.END_MARGIN_MS:
+            self._finish_episode()  # an ad is all that was left
+            return True
+        self.player.setPosition(end)
+        self._ads_prev_ms = end
+        self.adSkipped.emit(start, end)
+        self.seeked.emit(end // 1000)
+        return True
 
     # ------------------------------------------------------------ volume
 
@@ -270,6 +379,8 @@ class PlayerService(QObject):
     def _on_position(self, ms: int) -> None:
         if self.episode is None:
             return
+        if self._skip_ads(ms):
+            return
         secs = ms // 1000
         total = self._total_secs()
         self.positionChanged.emit(secs, total)
@@ -285,6 +396,10 @@ class PlayerService(QObject):
         if self.episode is not None and ms > 0:
             self.episode.total_secs = ms // 1000
             self._report(final=False)
+            # Whether spans apply depends on the duration, now known.
+            self.adSpansChanged.emit(self._usable_ad_spans())
+            if self._ads_mapped is None:
+                self._map_ads()
 
     def _on_media_status(self, status) -> None:
         if status == QMediaPlayer.MediaStatus.LoadedMedia and self._pending_seek_ms:

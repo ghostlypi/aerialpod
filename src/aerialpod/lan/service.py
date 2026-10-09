@@ -22,7 +22,7 @@ from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 
 from .. import db
 from ..db import repo
-from . import discovery, pairing, state
+from . import discovery, files, pairing, state
 from .protocol import Channel, ProtocolError
 
 log = logging.getLogger(__name__)
@@ -64,6 +64,10 @@ class PeerLink(QObject):
         self.peer_id: str | None = None
         self.caption: str = ""
         self.peer_port: int = 0
+        # "sync" for a peer; "file" for a link that carries one file transfer
+        # and nothing else (lan/files.py).
+        self.purpose: str = "sync"
+        self.sending = False  # a file link that has started its one transfer
         self.channel = Channel(role, key)
         self._sent_ident = False
         self._closing = False
@@ -153,6 +157,7 @@ class PeerLink(QObject):
             self.peer_port = int(message.get("port") or 0)
         except (TypeError, ValueError):
             self.peer_port = 0
+        self.purpose = "file" if message.get("purpose") == "file" else "sync"
         self.ready.emit(self)
 
     def _on_disconnected(self) -> None:
@@ -336,6 +341,11 @@ class LanService(QObject):
             log.debug("connected to ourselves at %s — dropping", link.address)
             link.close()
             return
+        if link.purpose == "file":
+            # A second connection from a peer we may already be syncing with,
+            # here to fetch one file. Not a peer link: registering it would
+            # replace — and on the duplicate-link tie-break, close — the real one.
+            return
 
         existing = self._by_peer.get(link.peer_id)
         if existing is not None and existing is not link:
@@ -414,6 +424,10 @@ class LanService(QObject):
 
     def _on_message(self, link: PeerLink, message: dict) -> None:
         kind = message.get("type")
+        if link.purpose == "file":
+            if kind == "file_get":
+                self._serve_file(link, message)
+            return
         try:
             if kind == "snapshot":
                 counts = state.merge_snapshot(message)
@@ -431,6 +445,22 @@ class LanService(QObject):
             log.warning("rejected a message from %s: %s", link.caption, exc)
         except Exception:  # noqa: BLE001 — a bad peer must never kill this thread
             log.exception("failed to apply a %s from %s", kind, link.caption)
+
+    def _serve_file(self, link: PeerLink, message: dict) -> None:
+        if link.sending:
+            return  # one transfer per link
+        found = files.servable(message)
+        if isinstance(found, str):
+            log.info("%s asked for a file: %s", link.caption, found)
+            link.send({"type": "file_err", "reason": found})
+            return
+        path, audio = found
+        try:
+            offset = int(message.get("offset") or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        link.sending = True
+        files.FileSender(link, path, offset, self).start(audio)
 
     @Slot()
     def broadcast_snapshot(self) -> None:

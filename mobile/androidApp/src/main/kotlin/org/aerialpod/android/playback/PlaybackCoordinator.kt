@@ -9,16 +9,24 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import org.aerialpod.android.platform.PlaybackSignals
 import org.aerialpod.core.AerialPodCore
+import org.aerialpod.core.ads.AdAnchors
+import org.aerialpod.core.ads.AdSkip
+import org.aerialpod.core.ads.AdSpan
+import org.aerialpod.core.ads.EpisodeAds
+import org.aerialpod.core.ads.FileByteSource
+import org.aerialpod.core.ads.adsFor
+import org.aerialpod.core.db.Repo
 
 /**
  * Everything that has to happen around the player.
  *
  * The port of the desktop's `core/player.py`, minus the parts Media3 already
  * does. What is left is the behaviour the two apps must share: per-podcast
- * speed, skip intro and outro, throttled position writes, and what "finished"
- * means.
+ * speed, skip intro and outro, ad skipping, throttled position writes, and
+ * what "finished" means.
  *
  * It lives beside the player in the service rather than in the UI, because
  * every one of these has to keep working with the app backgrounded and the
@@ -28,11 +36,19 @@ class PlaybackCoordinator(
     private val player: Player,
     private val core: AerialPodCore,
     private val signals: PlaybackSignals,
+    private val adSkips: AdSkips,
     private val scope: CoroutineScope,
 ) {
     companion object {
         /** `POSITION_WRITE_MS` from `core/player.py`. */
         const val POSITION_WRITE_MS = 5_000L
+
+        /**
+         * How often to look for an ad while playing. The desktop hears every
+         * position change; this is the nearest equivalent, and only runs while
+         * the loaded copy has spans to skip.
+         */
+        const val AD_CHECK_MS = 250L
     }
 
     /**
@@ -54,10 +70,20 @@ class PlaybackCoordinator(
      */
     private var outroFired = false
 
+    // Ad spans for what is loaded. The rules are AdSkip's, shared with the desktop.
+    private var adsEnabled = true
+    private var ads: EpisodeAds? = null
+    private var adsMapped: List<AdSpan>? = null     // moved onto this copy (AdAnchors)
+    private val adsAllowed = mutableSetOf<Int>()   // undone: let them play
+    private var adsPrevMs: Long? = null
+    private var adsLast: Int? = null                // the span most recently skipped
+    private var adTicker: Job? = null
+
     private val listener = object : Player.Listener {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) startTicking() else stopTicking()
+            if (isPlaying) startAdTicking() else stopAdTicking()
             // Both edges are transport events. The play edge also dials if no
             // link is up — see PlaybackSignals.
             signals.setPlaying(isPlaying, currentEpisodeId())
@@ -76,20 +102,42 @@ class PlaybackCoordinator(
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             outroFired = false
+            ads = null
+            adsMapped = null
+            adsAllowed.clear()
+            adsPrevMs = null
+            adsLast = null
             main.launch { applyPerPodcastSettings() }
+            main.launch { loadAds() }
         }
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) finishEpisode()
+            // Whether spans apply depends on the duration, known from here on.
+            if (state == Player.STATE_READY) {
+                publishAds()
+                if (player.isPlaying) startAdTicking()
+                if (adsMapped == null) main.launch { mapAds() }
+            }
         }
     }
 
     fun attach() {
         player.addListener(listener)
+        main.launch { adSkips.undoRequests.collect { undoAdSkip() } }
+        // A desktop finishing its analysis mid-episode should still help.
+        main.launch { core.lan.merged.collect { if (it.ads > 0) loadAds() } }
+        main.launch {
+            core.library.stateBool(Repo.ADS_SKIP_ENABLED, true).collect {
+                adsEnabled = it
+                loadAds()
+            }
+        }
     }
 
     fun detach() {
         stopTicking()
+        stopAdTicking()
         player.removeListener(listener)
         main.cancel()
     }
@@ -187,6 +235,106 @@ class PlaybackCoordinator(
                 finishEpisode()
             }
         }
+    }
+
+    // ---------------------------------------------------------------- ads
+
+    private suspend fun loadAds() {
+        val episodeId = currentEpisodeId()
+        val loaded = if (episodeId == null || !adsEnabled) null
+        else withContext(Dispatchers.IO) { core.repo.db.adsFor(episodeId) }
+        if (currentEpisodeId() != episodeId) return  // moved on while reading
+        ads = loaded
+        adsMapped = null
+        publishAds()
+        if (player.isPlaying) startAdTicking()
+        mapAds()
+    }
+
+    /**
+     * Move the spans onto the downloaded copy being played. The desktop analysed
+     * its own download, which dynamic ad insertion may have filled with
+     * different ads of different lengths; AdAnchors finds the show's own bytes
+     * either side of each span in this file. A stream has no file to search, and
+     * falls back to the length check in [usableSpans].
+     */
+    private suspend fun mapAds() {
+        val found = ads ?: return
+        val anchors = found.anchors ?: return
+        val episodeId = currentEpisodeId() ?: return
+        val duration = player.duration
+        if (duration <= 0) return
+        val mapped = withContext(Dispatchers.IO) {
+            val episode = core.repo.episodeById(episodeId) ?: return@withContext null
+            val file = episode.downloaded_path
+                ?.takeIf { episode.download_state == "done" }
+                ?.let(::File)?.takeIf { it.exists() } ?: return@withContext null
+            runCatching {
+                AdAnchors.mapSpans(
+                    found.spans, anchors, found.durationMs,
+                    AdAnchors.Audio(FileByteSource(file), duration), duration,
+                )
+            }.getOrNull()
+        } ?: return
+        if (ads !== found) return  // another episode, or newer spans, since this started
+        adsMapped = mapped
+        publishAds()
+        if (player.isPlaying) startAdTicking()
+    }
+
+    /** The spans as placed in this copy, or as found if it is the same length. */
+    private fun usableSpans(): List<AdSpan> {
+        adsMapped?.let { return it }
+        val found = ads ?: return emptyList()
+        return if (AdSkip.applies(found.durationMs, player.duration)) found.spans else emptyList()
+    }
+
+    private fun publishAds() {
+        val usable = usableSpans()
+        val elsewhere = usable.isEmpty() && player.duration > 0 && !ads?.spans.isNullOrEmpty()
+        adSkips.publish(usable, foundElsewhere = elsewhere)
+    }
+
+    private fun startAdTicking() {
+        if (adTicker?.isActive == true || usableSpans().isEmpty()) return
+        adTicker = main.launch {
+            while (true) {
+                checkAds()
+                delay(AD_CHECK_MS)
+            }
+        }
+    }
+
+    private fun stopAdTicking() {
+        adTicker?.cancel()
+        adTicker = null
+    }
+
+    private fun checkAds() {
+        val spans = usableSpans()
+        val position = player.currentPosition
+        val previous = adsPrevMs
+        adsPrevMs = position
+        val index = AdSkip.spanToSkip(spans, adsAllowed, previous, position) ?: return
+        val span = spans[index]
+        val episodeId = currentEpisodeId() ?: return
+        adsLast = index
+        if (span.endMs >= player.duration - AdSkip.END_MARGIN_MS) {
+            finishEpisode()  // an ad is all that was left
+            return
+        }
+        player.seekTo(span.endMs)
+        adsPrevMs = span.endMs
+        adSkips.announce(AdSkips.Skipped(episodeId, span.startMs, span.endMs))
+    }
+
+    private fun undoAdSkip() {
+        val index = adsLast ?: return
+        val span = usableSpans().getOrNull(index) ?: return
+        adsAllowed += index
+        adsLast = null
+        player.seekTo(span.startMs)
+        adsPrevMs = span.startMs
     }
 
     // ---------------------------------------------------------------- finish

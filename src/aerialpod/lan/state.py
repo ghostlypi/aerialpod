@@ -30,6 +30,7 @@ gpodder sync uses, since ad-injecting CDNs rotate enclosure URLs per device.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -44,6 +45,8 @@ log = logging.getLogger(__name__)
 SNAPSHOT_VERSION = 1
 GAP = 1024
 POSITION_LIMIT = 1000  # most recently touched in-progress episodes
+ADS_LIMIT = 500        # ad-span rows per snapshot: the queue plus recent ones
+ADS_RECENT_SECS = 30 * 86400
 
 
 # ---------------------------------------------------------------- building
@@ -57,6 +60,7 @@ def build_snapshot() -> dict[str, Any]:
         "intents": _build_intents(conn),
         "settings": _build_settings(conn),
         "positions": _build_positions(conn),
+        "ads": _build_ads(conn),
     }
 
 
@@ -77,6 +81,7 @@ def replicated_version(conn) -> int:
         "  SELECT MAX(updated_at) AS v FROM queue_intent"
         "  UNION ALL SELECT MAX(updated_at) FROM podcast_settings"
         "  UNION ALL SELECT MAX(position_updated_at) FROM episodes"
+        "  UNION ALL SELECT MAX(updated_at) FROM ad_segments"
         ")"
     ).fetchone()
     return int(row[0] or 0)
@@ -149,6 +154,39 @@ def _build_positions(conn) -> list[dict[str, Any]]:
             # still in progress, so a peer that only sees the number puts it
             # back in its queue.
             "finished": r["state"] == "played",
+        }
+        for r in rows
+    ]
+
+
+def _build_ads(conn) -> list[dict[str, Any]]:
+    """Ad spans the detector (or a peer's) found.
+
+    Bounded the same way positions are: what is queued is what anyone is about
+    to play, and recent rows cover an episode that just left the queue on one
+    device but is still mid-listen on another.
+    """
+    rows = conn.execute(
+        "SELECT a.*, e.guid, e.media_url, p.feed_url FROM ad_segments a "
+        "JOIN episodes e ON e.id = a.episode_id "
+        "JOIN podcasts p ON p.id = e.podcast_id "
+        "WHERE a.episode_id IN (SELECT episode_id FROM queue) OR a.updated_at > ? "
+        "ORDER BY a.updated_at DESC LIMIT ?",
+        (int(time.time()) - ADS_RECENT_SECS, ADS_LIMIT),
+    )
+    return [
+        {
+            "feed": r["feed_url"],
+            "guid": r["guid"],
+            "media": r["media_url"],
+            "duration_ms": r["duration_ms"],
+            "spans": json.loads(r["spans"]),
+            "anchors": json.loads(r["anchors"]) if r["anchors"] else None,
+            "audio": ({"bytes": r["audio_bytes"], "sha256": r["audio_sha256"]}
+                      if r["audio_sha256"] else None),
+            "model": r["model"],
+            "updated_at": r["updated_at"],
+            "updated_by": r["updated_by"],
         }
         for r in rows
     ]
@@ -236,8 +274,15 @@ def merge_snapshot(snapshot: dict[str, Any]) -> dict[str, int]:
         for rec in snapshot.get("settings") or []
         if (p := matching.match_podcast(rec.get("feed") or "")) is not None
     ]
+    # Absent from a peer that predates ad detection, which is fine: absence
+    # changes nothing here, it only means that peer has nothing to add.
+    ads = [
+        (rec, ep)
+        for rec in snapshot.get("ads") or []
+        if (ep := resolve_episode(rec)) is not None
+    ]
 
-    counts = {"positions": 0, "intents": 0, "settings": 0}
+    counts = {"positions": 0, "intents": 0, "settings": 0, "ads": 0}
     with db.transaction() as conn:
         for rec, ep in positions:
             counts["positions"] += _apply_position(conn, rec, ep)
@@ -245,6 +290,8 @@ def merge_snapshot(snapshot: dict[str, Any]) -> dict[str, int]:
             counts["intents"] += _apply_intent(conn, rec, ep)
         for rec, podcast in settings:
             counts["settings"] += _apply_settings(conn, rec, podcast.id)
+        for rec, ep in ads:
+            counts["ads"] += _apply_ads(conn, rec, ep)
         if counts["intents"]:
             _renumber_queue(conn)
     return counts
@@ -361,6 +408,74 @@ def _apply_settings(conn, record: dict[str, Any], podcast_id: int) -> int:
         ),
     )
     return 1
+
+
+def _apply_ads(conn, record: dict[str, Any], episode: Episode) -> int:
+    spans = _valid_spans(record.get("spans"))
+    duration = int(record.get("duration_ms") or 0)
+    if spans is None or duration <= 0:
+        return 0
+    local = conn.execute(
+        "SELECT updated_at, updated_by FROM ad_segments WHERE episode_id=?", (episode.id,)
+    ).fetchone()
+    if local is not None and not _newer(record, local["updated_at"], local["updated_by"]):
+        return 0
+    repo.set_ad_segments(
+        conn, episode.id, duration, spans,
+        anchors=_valid_anchors(record.get("anchors"), len(spans)),
+        audio=_valid_audio(record.get("audio")),
+        model=record.get("model"),
+        updated_at=int(record.get("updated_at") or 0),
+        updated_by=str(record.get("updated_by") or ""),
+    )
+    return 1
+
+
+def _valid_spans(raw: Any) -> list[list[float]] | None:
+    """Spans drive seeks on every device, so a malformed one is rejected rather
+    than half-applied: the whole record is dropped, and the local row stands."""
+    if not isinstance(raw, list):
+        return None
+    spans = []
+    for span in raw:
+        if not (isinstance(span, list) and len(span) == 3
+                and all(isinstance(v, (int, float)) for v in span)):
+            return None
+        start, end, confidence = span
+        if not 0 <= start < end or not 0 <= confidence <= 1:
+            return None
+        spans.append([int(start), int(end), float(confidence)])
+    return spans
+
+
+def _valid_audio(raw: Any) -> dict | None:
+    """Which file the spans were found in: {"bytes": int, "sha256": hex}."""
+    if not isinstance(raw, dict):
+        return None
+    size, digest = raw.get("bytes"), raw.get("sha256")
+    if not isinstance(size, int) or size <= 0 or not isinstance(digest, str):
+        return None
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        return None
+    return {"bytes": size, "sha256": digest}
+
+
+def _valid_anchors(raw: Any, count: int) -> list[dict] | None:
+    """Anchors parallel to the spans, or None. Unlike a bad span, a bad anchor
+    costs nothing but reach: the spans still apply to an identical copy."""
+    if not isinstance(raw, list) or len(raw) != count:
+        return None
+    for anchor in raw:
+        if not isinstance(anchor, dict):
+            return None
+        for side in ("pre", "post"):
+            needles = anchor.get(side)
+            if not isinstance(needles, list) or not all(
+                isinstance(n, dict) and isinstance(n.get("at"), int)
+                and isinstance(n.get("b"), str) for n in needles
+            ):
+                return None
+    return raw
 
 
 def _renumber_queue(conn) -> None:

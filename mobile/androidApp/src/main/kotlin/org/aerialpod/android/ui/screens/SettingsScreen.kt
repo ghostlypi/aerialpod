@@ -22,6 +22,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -132,6 +133,8 @@ fun SettingsScreen(graph: AppGraph) {
         .collectAsStateWithLifecycle(10L)
     val downloaded by remember(graph) { graph.library.downloaded }
         .collectAsStateWithLifecycle(emptyList())
+    val skipAds by remember(graph) { graph.library.stateBool(Repo.ADS_SKIP_ENABLED, true) }
+        .collectAsStateWithLifecycle(true)
 
     val snapshot by produceState<Snapshot?>(null, graph, showAccount, showEnterCode, showManualPeer) {
         value = withContext(Dispatchers.IO) {
@@ -288,6 +291,21 @@ fun SettingsScreen(graph: AppGraph) {
             Text(
                 "The same settings your desktop has. They are per-device, so " +
                     "changing one here does not change it there.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Section("Ad removal") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Skip ads automatically", modifier = Modifier.weight(1f))
+                Switch(checked = skipAds, onCheckedChange = { graph.actions.setAdsSkip(it) })
+            }
+            Text(
+                "Your computer finds the ads, with AI that runs on the computer itself, " +
+                    "and sends their timestamps here over device sync. The phone does no " +
+                    "detection of its own. Ads are only skipped in a download or stream " +
+                    "that matches the copy the computer analysed.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

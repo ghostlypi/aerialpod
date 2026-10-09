@@ -52,6 +52,9 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "lan_add_peer": ("LanAddPeer", "su"),
     "lan_remove_peer": ("LanRemovePeer", "su"),
     "lan_discover": ("LanDiscover", ""),
+    "ads_detect": ("AdsDetect", "u"),
+    "ads_clear": ("AdsClear", "u"),
+    "ads_retry": ("AdsRetry", ""),
     "announce_state": ("AnnounceState", ""),
 }
 
@@ -74,6 +77,8 @@ SIGNALS: dict[str, str] = {
     "downloadStarted": "DownloadStarted",
     "downloadFinished": "DownloadFinished",
     "downloadFailed": "DownloadFailed",
+    "adsStatus": "AdsStatus",
+    "adsChanged": "AdsChanged",
 }
 
 

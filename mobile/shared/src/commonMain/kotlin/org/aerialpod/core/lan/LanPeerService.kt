@@ -441,6 +441,22 @@ class LanPeerService(
         }
     }
 
+    // ---------------------------------------------------------------- files
+
+    /**
+     * Fetch an episode's analysed audio from the desktop that analysed it,
+     * [deviceId] — the `updated_by` of its ad row. Dialled at that device's
+     * remembered address, on a connection of its own (FileFetch).
+     */
+    suspend fun fetchFile(deviceId: String, request: FileRequest, sink: FileSink): FetchResult {
+        if (!repo.lanSyncEnabled()) return FetchResult.Failed("device sync is off")
+        val peer = repo.knownPeers().firstOrNull { it.device_id == deviceId }
+        val address = peer?.address?.takeIf { it.isNotEmpty() }
+            ?: return FetchResult.Failed("that device has not been reached yet")
+        val port = peer.port.toInt().takeIf { it > 0 } ?: repo.lanPort()
+        return FileFetch(address, port, channelKey(), ident(), selector).run(request, sink)
+    }
+
     private fun ident() = Ident(
         deviceId = repo.lanDeviceId(),
         caption = deviceCaption,

@@ -63,4 +63,5 @@ SELECT MAX(v) FROM (
   SELECT MAX(updated_at) AS v FROM queue_intent
   UNION ALL SELECT MAX(updated_at) FROM podcast_settings
   UNION ALL SELECT MAX(position_updated_at) FROM episodes
+  UNION ALL SELECT MAX(updated_at) FROM ad_segments
 );

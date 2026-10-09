@@ -1,0 +1,15 @@
+-- v1 → v2: ad spans (AdSegments.sq). The first schema change since the app
+-- shipped, so the first migration: without it an upgraded install would never
+-- get the table and the first merge carrying ads would crash.
+
+CREATE TABLE ad_segments (
+  episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  duration_ms INTEGER NOT NULL,
+  spans TEXT NOT NULL,
+  anchors TEXT,                 -- JSON, parallel to spans: where they sit in the file
+  audio_bytes INTEGER,          -- the analysed file itself, which the desktop
+  audio_sha256 TEXT,            -- that analysed it can hand over (FileFetch)
+  model TEXT,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT NOT NULL
+);

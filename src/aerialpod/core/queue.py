@@ -8,7 +8,8 @@ Rules (see plan):
 - In-progress episodes insert after the playing item + leading pinned block;
   fresh episodes append at the end in pub_date order — unless their podcast is
   set to 'front' (see repo.effective_queue_position), which puts them at the
-  top instead, newest first.
+  top instead, newest first, above in-progress episodes — and keeps them there
+  on every later reconcile, not just the one that added them.
 """
 
 from __future__ import annotations
@@ -344,6 +345,21 @@ class QueueManager(QObject, QueueReader):
             # in just under the head block, newest first, so this morning's
             # episode takes the top slot and yesterday's sits below it.
             # Anything playing or explicitly pinned still outranks it.
+            #
+            # That holds on every pass, not only the one that added it: once
+            # queued, a front episode is an ordinary row in `rest`, and without
+            # this block the in-progress floaters overtake it on the very next
+            # reconcile — which is how this feature quietly regressed before.
+            def is_front(eid: int) -> bool:
+                q = by_id.get(eid)
+                ep = repo.episode_by_id(eid)
+                return (
+                    q is not None and not q.pinned
+                    and ep is not None and ep.position_secs == 0
+                    and repo.effective_queue_position(ep.podcast_id) == "front"
+                )
+
+            queued_front = [eid for eid in rest if is_front(eid)]
             untouched = [ep for ep in candidates if ep.position_secs == 0]
             front = sorted(
                 (ep for ep in untouched
@@ -360,8 +376,9 @@ class QueueManager(QObject, QueueReader):
             order = (
                 head
                 + [ep.id for ep in front]
+                + queued_front
                 + floaters
-                + [eid for eid in rest if eid not in float_ids]
+                + [eid for eid in rest if eid not in float_ids and eid not in queued_front]
                 + [ep.id for ep in back]
             )
             old_order = [q.episode_id for q in survivors]

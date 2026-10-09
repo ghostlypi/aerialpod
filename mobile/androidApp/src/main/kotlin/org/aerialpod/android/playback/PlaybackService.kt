@@ -19,8 +19,8 @@ import org.aerialpod.android.appGraph
  * the next gpodder cycle.
  *
  * The service owns the player; [PlaybackCoordinator] owns everything that has
- * to happen *around* it — per-podcast speed, skip intro and outro, position
- * writes, auto-advance and the sleep timer.
+ * to happen *around* it — per-podcast speed, skip intro and outro, ad
+ * skipping, position writes, auto-advance and the sleep timer.
  *
  * A library service rather than a plain session service so Android Auto can
  * browse it: [LibraryCallback] serves the tree and turns a pick into playback.
@@ -57,6 +57,7 @@ class PlaybackService : MediaLibraryService() {
             player = player,
             core = graph.core,
             signals = graph.playback,
+            adSkips = graph.adSkips,
             scope = graph.scope,
         ).also { it.attach() }
     }

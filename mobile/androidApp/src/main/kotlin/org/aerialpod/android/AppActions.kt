@@ -2,6 +2,7 @@ package org.aerialpod.android
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -11,8 +12,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.aerialpod.core.AerialPodCore
-import org.aerialpod.core.gpodder.GpodderCredentials
+import org.aerialpod.core.db.Repo
 import org.aerialpod.core.gpodder.GpodderCredentialStore
+import org.aerialpod.core.gpodder.GpodderCredentials
 import org.aerialpod.core.lan.Pairing
 
 /**
@@ -115,6 +117,10 @@ class AppActions(
         core.repo.setState(key, seconds)
     }
 
+    fun setAdsSkip(on: Boolean) = bg {
+        core.repo.setState(Repo.ADS_SKIP_ENABLED, on)
+    }
+
     fun setDownloadAhead(choice: String) = bg {
         core.repo.setDownloadAhead(choice)
         onDownloadsChanged()
@@ -204,7 +210,7 @@ class AppActions(
      * The pending message goes out first so the user is not looking at a screen
      * that seems to have ignored them.
      */
-    private fun busyBg(pending: String, block: suspend () -> String) {
+    private fun busyBg(pending: String, block: suspend () -> String): Job =
         scope.launch(Dispatchers.IO) {
             _busy.value = true
             _messages.tryEmit(pending)
@@ -213,7 +219,6 @@ class AppActions(
                 .onFailure { report(it) }
             _busy.value = false
         }
-    }
 
     /** Surface a message the UI itself produced — a file it could not read. */
     fun report(message: String) {

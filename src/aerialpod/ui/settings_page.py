@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QRectF, QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -21,15 +24,71 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..ads import detector, spans
+from ..core import downloads
 from ..db import repo
 from ..gpodder import credentials
 from ..lan import discovery, pairing
 
 log = logging.getLogger(__name__)
 
+THEME_MODES = [("system", "System"), ("light", "Light"), ("dark", "Dark")]
+ACCENTS = [
+    ("GNOME Blue", "#3584e4"), ("Green", "#2ec27e"), ("Orange", "#e66100"),
+    ("Red", "#c01c28"), ("Purple", "#813d9c"), ("Brown", "#986a44"),
+    ("Teal", "#218787"), ("Pink", "#d56199"),
+]
+
+
+class AccentSwatch(QAbstractButton):
+    """A round colour button, as on the phone: a thin outline normally, a
+    thick ring in the text colour when it is the chosen accent."""
+
+    SIZE = 32
+
+    def __init__(self, name: str, color: str, parent=None):
+        super().__init__(parent)
+        self.color = color
+        self.setCheckable(True)
+        self.setToolTip(name)
+        self.setAccessibleName(f"{name} accent")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(self.sizeHint())
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.SIZE, self.SIZE)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        text = self.palette().color(self.palette().ColorRole.WindowText)
+        ring = 3.0 if self.isChecked() else 1.0
+        outline = QColor(text)
+        if not self.isChecked():
+            outline.setAlpha(140 if self.underMouse() else 60)
+        p.setPen(QPen(outline, ring))
+        p.setBrush(QColor(self.color))
+        inset = ring / 2 + 0.5
+        p.drawEllipse(QRectF(self.rect()).adjusted(inset, inset, -inset, -inset))
+        if self.hasFocus():
+            focus = QColor(text)
+            focus.setAlpha(90)
+            p.setPen(QPen(focus, 1, Qt.PenStyle.DotLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
+
+    def enterEvent(self, event) -> None:  # Qt override
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # Qt override
+        super().leaveEvent(event)
+        self.update()
+
 
 class SettingsPage(QWidget):
-    themeChanged = Signal()
+    themeChanged = Signal(dict)   # {state key: new value}
+    adsSkipChanged = Signal(bool)
 
     def __init__(self, client, parent=None):
         super().__init__(parent)
@@ -81,6 +140,8 @@ class SettingsPage(QWidget):
         # ---- device sync
         lay.addWidget(self._build_lan_group())
 
+        lay.addWidget(self._build_ads_group())
+
         # ---- playback
         playback = QGroupBox("Playback")
         pform = QFormLayout(playback)
@@ -107,37 +168,68 @@ class SettingsPage(QWidget):
             lambda i: self.client.set_state("media_next_action", self.media_next.itemData(i)))
         pform.addRow("Keyboard ⏭ / ⏮ buttons", self.media_next)
 
-        self.download_n = QSpinBox()
-        self.download_n.setRange(0, 10)
-        self.download_n.setValue(int(repo.get_state("download_ahead_n")))
-        self.download_n.valueChanged.connect(
-            lambda v: self.client.set_state("download_ahead_n", int(v)))
-        pform.addRow("Download next N queue items", self.download_n)
+        # Same choices as the phone's chips.
+        current_ahead = downloads.download_ahead()
+        self.download_ahead = QButtonGroup(self)
+        ahead = QHBoxLayout()
+        ahead.setSpacing(8)
+        for i, choice in enumerate(downloads.DOWNLOAD_AHEAD_CHOICES):
+            chip = QPushButton(downloads.download_ahead_label(choice))
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
+            chip.setChecked(choice == current_ahead)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.download_ahead.addButton(chip, i)
+            ahead.addWidget(chip)
+        ahead.addStretch(1)
+        self.download_ahead.idClicked.connect(self._on_download_ahead)
+        ahead_box = QVBoxLayout()
+        ahead_box.setSpacing(4)
+        ahead_box.addLayout(ahead)
+        ahead_note = QLabel(
+            "How much of the queue to keep on this device: a fixed number, or a "
+            "share of however long the queue is. A share rounds up, so a non-empty "
+            "queue always keeps at least one. Everything else streams.")
+        ahead_note.setObjectName("SyncStatus")
+        ahead_note.setWordWrap(True)
+        ahead_box.addWidget(ahead_note)
+        pform.addRow("Download ahead", ahead_box)
         lay.addWidget(playback)
 
         # ---- appearance
         appearance = QGroupBox("Appearance")
         aform = QFormLayout(appearance)
-        self.theme_mode = QComboBox()
-        self.theme_mode.addItems(["Follow system", "Light", "Dark"])
-        mode = repo.get_state("theme_mode")
-        self.theme_mode.setCurrentIndex({"system": 0, "light": 1, "dark": 2}.get(mode, 0))
-        self.theme_mode.currentIndexChanged.connect(self._on_theme_mode)
-        aform.addRow("Theme", self.theme_mode)
+        aform.setVerticalSpacing(14)
 
-        self.accent = QComboBox()
-        self._accents = [
-            ("GNOME Blue", "#3584e4"), ("Green", "#2ec27e"), ("Orange", "#e66100"),
-            ("Red", "#c01c28"), ("Purple", "#813d9c"), ("Brown", "#986a44"),
-            ("Teal", "#218787"), ("Pink", "#d56199"),
-        ]
-        for name, color in self._accents:
-            self.accent.addItem(name, color)
-        current = repo.get_state("accent")
-        idx = next((i for i, (_, c) in enumerate(self._accents) if c == current), 0)
-        self.accent.setCurrentIndex(idx)
-        self.accent.currentIndexChanged.connect(self._on_accent)
-        aform.addRow("Accent color", self.accent)
+        # Chips and swatches, as on the phone, rather than two dropdowns.
+        mode = repo.get_state("theme_mode")
+        self.theme_mode = QButtonGroup(self)
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        for i, (key, label) in enumerate(THEME_MODES):
+            chip = QPushButton(label)
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
+            chip.setChecked(key == mode or (i == 0 and mode not in dict(THEME_MODES)))
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.theme_mode.addButton(chip, i)
+            chips.addWidget(chip)
+        chips.addStretch(1)
+        self.theme_mode.idClicked.connect(self._on_theme_mode)
+        aform.addRow("Theme", chips)
+
+        current = (repo.get_state("accent") or "").lower()
+        self.accent = QButtonGroup(self)
+        swatches = QHBoxLayout()
+        swatches.setSpacing(12)
+        for i, (name, color) in enumerate(ACCENTS):
+            swatch = AccentSwatch(name, color)
+            swatch.setChecked(color == current)
+            self.accent.addButton(swatch, i)
+            swatches.addWidget(swatch)
+        swatches.addStretch(1)
+        self.accent.idClicked.connect(self._on_accent)
+        aform.addRow("Accent", swatches)
         lay.addWidget(appearance)
 
         # ---- data
@@ -269,6 +361,133 @@ class SettingsPage(QWidget):
         self._reload_manual_peers()
         return box
 
+    def _build_ads_group(self) -> QGroupBox:
+        box = QGroupBox("Ad removal")
+        form = QFormLayout(box)
+
+        self.ads_skip = QCheckBox("Skip ads automatically")
+        self.ads_skip.toggled.connect(self._on_ads_skip)
+        form.addRow(self.ads_skip)
+
+        if detector.toolchain_python() is None:
+            note = QLabel(
+                "This device skips ads that a paired device has found. To find them "
+                "here as well, install the detector with <code>./install.sh ai</code> "
+                "(a GPU is recommended)."
+            )
+            note.setWordWrap(True)
+            form.addRow(note)
+            self.ads_status = QLabel()
+            self._refresh_ads()
+            return box
+
+        blurb = QLabel(
+            "This device transcribes your queued episodes and finds the ads in them "
+            "with AI models that run here, on this machine. Your paired devices, "
+            "including your phone, get the ad timings and can download the exact "
+            "audio files that were analysed, so the skips line up. Nothing is sent "
+            "anywhere else."
+        )
+        blurb.setWordWrap(True)
+        form.addRow(blurb)
+
+        detect_row = QHBoxLayout()
+        self.ads_detect = QCheckBox("Find ads in queued episodes")
+        self.ads_detect.toggled.connect(self._on_ads_detect)
+        detect_row.addWidget(self.ads_detect)
+        detect_row.addStretch(1)
+        self.ads_pause = QPushButton()
+        self.ads_pause.setToolTip(
+            "Stops the episode being analysed now; it starts over when you resume. "
+            "Resuming also retries any episode that failed.")
+        self.ads_pause.clicked.connect(self._on_ads_pause)
+        self.ads_retry = QPushButton("Retry failed")
+        self.ads_retry.setToolTip("Try the episodes that failed again now.")
+        self.ads_retry.clicked.connect(self.client.ads_retry)
+        self.ads_retry.hide()  # until something has failed
+        detect_row.addWidget(self.ads_retry)
+        detect_row.addWidget(self.ads_pause)
+        form.addRow(detect_row)
+
+        self.ads_model = QComboBox()
+        for key, spec in spans.MODELS.items():
+            self.ads_model.addItem(spec["label"], key)
+        self.ads_model.currentIndexChanged.connect(
+            lambda i: self.client.set_state("ads_model", self.ads_model.itemData(i)))
+        form.addRow("Model", self.ads_model)
+
+        self.ads_battery = QCheckBox("Also while on battery")
+        self.ads_battery.toggled.connect(
+            lambda on: self.client.set_state("ads_on_battery", bool(on)))
+        form.addRow(self.ads_battery)
+
+        self.ads_status = QLabel()
+        self.ads_status.setObjectName("AdsStatus")
+        self.ads_status.setWordWrap(True)
+        # Selectable, so an error can be copied into a search or a bug report.
+        self.ads_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow(self.ads_status)
+        self._refresh_ads()
+        return box
+
+    def _refresh_ads(self) -> None:
+        """Show what is stored now. These settings change from elsewhere — the
+        daemon's defaults, a command line, another window — and a page built
+        once at startup would otherwise go on showing whatever was true then.
+        Signals are blocked so that showing a value never writes it back."""
+        with QSignalBlocker(self.ads_skip):
+            self.ads_skip.setChecked(bool(repo.get_state("ads_skip_enabled")))
+        if not hasattr(self, "ads_detect"):
+            return  # no detector toolchain on this device
+        detecting = detector.enabled()
+        with QSignalBlocker(self.ads_detect):
+            self.ads_detect.setChecked(detecting)
+        current = repo.get_state("ads_model")
+        if current not in spans.MODELS:
+            current = spans.DEFAULT_MODEL
+        with QSignalBlocker(self.ads_model):
+            self.ads_model.setCurrentIndex(max(0, self.ads_model.findData(current)))
+        with QSignalBlocker(self.ads_battery):
+            self.ads_battery.setChecked(bool(repo.get_state("ads_on_battery")))
+        self.ads_model.setEnabled(detecting)
+        self.ads_battery.setEnabled(detecting)
+        self._show_ads_paused(bool(repo.get_state("ads_paused")))
+        self.ads_pause.setEnabled(detecting)
+
+    def _on_ads_detect(self, on: bool) -> None:
+        self.client.set_state("ads_detect_enabled", bool(on))
+        self.ads_model.setEnabled(on)
+        self.ads_battery.setEnabled(on)
+        self.ads_pause.setEnabled(on)
+
+    def _on_ads_pause(self) -> None:
+        # Our own idea of the state, not the database's: the write goes to
+        # the daemon asynchronously, and a quick second click must undo the first.
+        paused = not self._ads_paused
+        self.client.set_state("ads_paused", paused)
+        self._show_ads_paused(paused)
+
+    def _show_ads_paused(self, paused: bool) -> None:
+        self._ads_paused = paused
+        self.ads_pause.setText("Resume" if paused else "Pause")
+        self.ads_pause.setObjectName("PrimaryButton" if paused else "")
+        self.ads_pause.style().unpolish(self.ads_pause)
+        self.ads_pause.style().polish(self.ads_pause)
+
+    def showEvent(self, event) -> None:  # Qt override
+        super().showEvent(event)
+        if hasattr(self, "ads_skip"):
+            self._refresh_ads()
+
+    def _on_ads_skip(self, on: bool) -> None:
+        self.client.set_state("ads_skip_enabled", bool(on))
+        self.adsSkipChanged.emit(bool(on))
+
+    def show_ads_status(self, message: str) -> None:
+        self.ads_status.setText(message)
+        if hasattr(self, "ads_retry"):
+            self.ads_retry.setVisible(detector.FAILURE_MARK in message)
+
     def _on_show_code(self, shown: bool) -> None:
         self.lan_code.setEchoMode(
             QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password
@@ -394,13 +613,22 @@ class SettingsPage(QWidget):
         self.password.clear()
         self.sync_status.setText("Account removed.")
 
+    def _on_download_ahead(self, idx: int) -> None:
+        choice = downloads.DOWNLOAD_AHEAD_CHOICES[idx]
+        # The integer key too, as the phone does: anything that only knows
+        # download_ahead_n still reads something close.
+        self.client.set_state("download_ahead_n", int(choice) if choice.isdigit() else 1)
+        self.client.set_state("download_ahead", choice)
+
     def _on_theme_mode(self, idx: int) -> None:
-        self.client.set_state("theme_mode", ["system", "light", "dark"][idx])
-        self.themeChanged.emit()
+        mode = THEME_MODES[idx][0]
+        self.client.set_state("theme_mode", mode)
+        self.themeChanged.emit({"theme_mode": mode})
 
     def _on_accent(self, idx: int) -> None:
-        self.client.set_state("accent", self.accent.itemData(idx))
-        self.themeChanged.emit()
+        accent = ACCENTS[idx][1]
+        self.client.set_state("accent", accent)
+        self.themeChanged.emit({"accent": accent})
 
     def show_sync_status(self, message: str) -> None:
         self.sync_status.setText(message)

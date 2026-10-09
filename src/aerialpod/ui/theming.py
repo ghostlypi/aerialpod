@@ -55,24 +55,28 @@ class ThemeManager(QObject):
         hints = QGuiApplication.styleHints()
         hints.colorSchemeChanged.connect(lambda _s: self.apply())
 
-    def _dark(self) -> bool:
-        mode = repo.get_state("theme_mode")
+    def _dark(self, mode: str) -> bool:
         if mode == "light":
             return False
         if mode == "dark":
             return True
         return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
 
-    def apply(self) -> None:
-        dark = self._dark()
-        accent = repo.get_state("accent")
+    def apply(self, changed: dict | None = None) -> None:
+        """`changed` carries a setting the window has just chosen. The write
+        goes to the daemon asynchronously, so the database may still hold the
+        old value when this runs; reading it back would apply the previous
+        choice, which is what made Light and Dark look swapped."""
+        changed = changed or {}
+        mode = changed.get("theme_mode", repo.get_state("theme_mode"))
+        accent = changed.get("accent", repo.get_state("accent"))
+        dark = self._dark(mode)
         tokens = _palette(dark, accent)
+        themes = resources.files("aerialpod.ui.themes")
+        # A plain path: the package is installed as files, never zipped.
+        tokens["check-icon"] = str(themes.joinpath("check.svg")).replace("\\", "/")
 
-        tmpl = (
-            resources.files("aerialpod.ui.themes")
-            .joinpath("base.qss.tmpl")
-            .read_text(encoding="utf-8")
-        )
+        tmpl = themes.joinpath("base.qss.tmpl").read_text(encoding="utf-8")
         qss = tmpl
         # longest keys first so '@accent-hover' isn't clobbered by '@accent'
         for key in sorted(tokens, key=len, reverse=True):

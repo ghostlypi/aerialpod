@@ -1,6 +1,6 @@
 # AerialPod Privacy Policy
 
-**Effective date:** 27 August 2026
+**Effective date:** 6 October 2026
 **Applies to:** the AerialPod Android application (`org.aerialpod.android`)
 
 ## The short version
@@ -93,8 +93,15 @@ When on:
 - Every frame is encrypted with AES-GCM under per-direction session keys
   derived from your pairing code. A device without that code cannot read the
   traffic or complete the handshake.
-- What is exchanged is your queue, playback positions, played state, and
-  per-podcast settings.
+- What is exchanged is your queue, playback positions, played state,
+  per-podcast settings, and — if one of your computers detects ads — where the
+  ads are in each episode: start and end times, plus a few short runs of bytes
+  copied from the episode's own audio file, which let the phone find the same
+  ads in its own copy. Ad detection itself runs only on that computer; the
+  phone does none. The phone may also download an episode's audio from that
+  computer instead of from the podcast's server, over the same encrypted
+  connection, so it plays exactly the copy the ads were found in. Transcripts
+  are never sent anywhere.
 - The Android app **never listens for incoming connections.** It only dials out
   to addresses you added. It cannot be connected to.
 
