@@ -54,7 +54,7 @@ class PlayerController(
      * Everything that touches it goes through here; the database reads that
      * feed it are the only part moved off.
      */
-    private val main = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate)
+    private val main = mainChildScope(scope)
 
     private var controller: MediaController? = null
     private val pending = ArrayDeque<(MediaController) -> Unit>()

@@ -57,7 +57,7 @@ class PlaybackCoordinator(
      * command has to happen here or it throws; only the database work is moved
      * off it.
      */
-    private val main = CoroutineScope(scope.coroutineContext + Dispatchers.Main.immediate)
+    private val main = mainChildScope(scope)
 
     private var ticker: Job? = null
 
