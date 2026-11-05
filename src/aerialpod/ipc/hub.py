@@ -260,7 +260,12 @@ class ServiceHub(QObject):
     def set_playing(self, episode_id: int) -> None:
         """Which episode the front end is playing, so reconcile never drops it.
         0 means nothing is playing."""
+        previous = self.queue.playing_episode_id
         self.queue.playing_episode_id = int(episode_id) or None
+        if previous is not None and previous != self.queue.playing_episode_id:
+            # The released episode lost its protection; if it was finished
+            # meanwhile — on a phone, say — this is the moment it leaves.
+            self.queue.reconcile()
 
     # ------------------------------------------------------------ playback
 

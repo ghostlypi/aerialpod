@@ -378,6 +378,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         QSettings().setValue("mainwindow/geometry", self.saveGeometry())
         self.player.shutdown()
+        # The daemon outlives this window. Left set, its idea of what is playing
+        # keeps that episode in the queue forever — even once another device
+        # has finished it.
+        self.client.set_playing(None)
         if self.mpris is not None:
             self.mpris.shutdown()
         self.client.shutdown()

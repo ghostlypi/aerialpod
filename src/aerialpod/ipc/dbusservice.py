@@ -12,7 +12,7 @@ import asyncio
 import logging
 import threading
 
-from dbus_fast import RequestNameReply
+from dbus_fast import Message, MessageType, RequestNameReply
 from dbus_fast.aio import MessageBus
 from dbus_fast.service import ServiceInterface, method, signal as dbus_signal
 from PySide6.QtCore import QObject, QThread, Signal
@@ -20,6 +20,35 @@ from PySide6.QtCore import QObject, QThread, Signal
 from .protocol import BUS_NAME, INTERFACE, OBJECT_PATH, decode_args
 
 log = logging.getLogger(__name__)
+
+
+class PlaybackOwner:
+    """Which bus connection last said what is playing.
+
+    The window reports SetPlaying, and the daemon outlives it. A window that
+    crashes, or a session that is killed, never says "nothing is playing", and
+    that episode would stay protected from reconcile for the daemon's whole
+    life. Remembering the sender lets its disappearance stand in for that call.
+    """
+
+    def __init__(self) -> None:
+        self.sender: str | None = None
+
+    def note(self, sender: str | None, episode_id: int) -> None:
+        self.sender = sender if episode_id else None
+
+    def lost(self, name: str) -> bool:
+        """`name` left the bus. True if playback should be released."""
+        if name and name == self.sender:
+            self.sender = None
+            return True
+        return False
+
+
+_NAME_OWNER_CHANGED = (
+    "type='signal',sender='org.freedesktop.DBus',"
+    "interface='org.freedesktop.DBus',member='NameOwnerChanged'"
+)
 
 
 class _Interface(ServiceInterface):
@@ -263,6 +292,7 @@ class DaemonBus(QObject):
         self._bus = None
         self._ready = threading.Event()
         self._failed = False
+        self.playback_owner = PlaybackOwner()
 
         self.command.connect(hub.execute)
         for qt_name in hub_signal_names():
@@ -295,6 +325,15 @@ class DaemonBus(QObject):
         self._bus = bus = await MessageBus().connect()
         self.iface = _Interface(self, self.app_version, self.schema)
         bus.export(OBJECT_PATH, self.iface)
+        bus.add_message_handler(self._watch_playback_owner)
+        await bus.call(Message(
+            destination="org.freedesktop.DBus",
+            path="/org/freedesktop/DBus",
+            interface="org.freedesktop.DBus",
+            member="AddMatch",
+            signature="s",
+            body=[_NAME_OWNER_CHANGED],
+        ))
         reply = await bus.request_name(BUS_NAME)
         if reply not in (RequestNameReply.PRIMARY_OWNER, RequestNameReply.ALREADY_OWNER):
             log.error("another AerialPod service already owns %s", BUS_NAME)
@@ -304,6 +343,23 @@ class DaemonBus(QObject):
         log.info("service up at %s", BUS_NAME)
         self._ready.set()
         await bus.wait_for_disconnect()
+
+    def _watch_playback_owner(self, msg: Message) -> None:
+        """Runs on the bus loop for every message; never claims one."""
+        if msg.message_type is MessageType.METHOD_CALL:
+            if msg.interface == INTERFACE and msg.member == "SetPlaying" and msg.body:
+                self.playback_owner.note(msg.sender, int(msg.body[0]))
+        elif (
+            msg.message_type is MessageType.SIGNAL
+            and msg.member == "NameOwnerChanged"
+            and msg.sender == "org.freedesktop.DBus"
+            and len(msg.body) == 3
+            and not msg.body[2]
+            and self.playback_owner.lost(msg.body[0])
+        ):
+            log.info("the window left the bus while playing — releasing its episode")
+            self.command.emit("set_playing", [0])
+        return None
 
     def _post(self, fn) -> None:
         if self.loop is not None and self._ready.is_set() and not self._failed:

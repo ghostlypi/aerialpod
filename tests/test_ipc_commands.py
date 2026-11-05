@@ -104,6 +104,34 @@ def test_set_playing_protects_the_current_episode(client, episodes):
     assert episodes[0] not in queue_ids()
 
 
+def test_releasing_playback_drops_an_episode_finished_elsewhere(client, episodes):
+    # The window had it loaded when a phone finished it. Releasing it — the
+    # window closing, or leaving the bus — must drop it without waiting for
+    # some unrelated reconcile, which may be hours away.
+    client.queue_add(episodes[0])
+    client.set_playing(episodes[0])
+    repo.update_episode(episodes[0], state="played", position_secs=3000, total_secs=3000)
+    client.reconcile()
+    assert episodes[0] in queue_ids()
+
+    client.set_playing(None)
+    assert episodes[0] not in queue_ids()
+
+
+def test_playback_owner_releases_only_for_the_window_that_set_it():
+    from aerialpod.ipc.dbusservice import PlaybackOwner
+
+    owner = PlaybackOwner()
+    owner.note(":1.50", 42)
+    assert not owner.lost(":1.99")       # some other client went away
+    assert owner.lost(":1.50")           # the window did
+    assert not owner.lost(":1.50")       # and only once
+
+    owner.note(":1.50", 42)
+    owner.note(":1.50", 0)               # it said "nothing is playing" itself
+    assert not owner.lost(":1.50")
+
+
 # ---------------------------------------------------------------- settings
 
 
